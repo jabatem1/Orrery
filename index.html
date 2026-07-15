@@ -214,6 +214,7 @@ function Scene3D({getState,selectedRef,onSelect,showOrbits,showEcliptic,focusEar
   const sight=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:0xffd97a,transparent:true,opacity:0.85}));scene.add(sight);
   let theta=0.9,phi=0.85,radius=70,target=new THREE.Vector3(),dragging=false,lastX=0,lastY=0,pinch=0;
   const dom=renderer.domElement;
+  dom.style.touchAction="none"; // the canvas owns its touches — pinch/drag drive the model, not the page
   const setCam=()=>{camera.position.set(target.x+radius*Math.sin(phi)*Math.cos(theta),target.y+radius*Math.cos(phi),target.z+radius*Math.sin(phi)*Math.sin(theta));camera.lookAt(target);};
   const down=(e)=>{dragging=true;const t=e.touches?e.touches[0]:e;lastX=t.clientX;lastY=t.clientY;};
   const move=(e)=>{if(!dragging)return;const t=e.touches?e.touches[0]:e;theta-=(t.clientX-lastX)*0.006;phi-=(t.clientY-lastY)*0.006;phi=Math.max(0.08,Math.min(Math.PI-0.08,phi));lastX=t.clientX;lastY=t.clientY;};
@@ -222,7 +223,10 @@ function Scene3D({getState,selectedRef,onSelect,showOrbits,showEcliptic,focusEar
   const tmove=(e)=>{if(e.touches.length===2){const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);if(pinch)radius=Math.max(8,Math.min(600,radius*(pinch/d)));pinch=d;}else move(e);};
   dom.addEventListener("mousedown",down);window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);
   dom.addEventListener("wheel",wheel,{passive:false});
-  dom.addEventListener("touchstart",down,{passive:true});dom.addEventListener("touchmove",tmove,{passive:true});dom.addEventListener("touchend",up);
+  const tmoveBlock=(e)=>{e.preventDefault();tmove(e);}; // stop the page from scrolling/zooming mid-gesture
+  dom.addEventListener("touchstart",down,{passive:true});dom.addEventListener("touchmove",tmoveBlock,{passive:false});dom.addEventListener("touchend",up);
+  // Safari's proprietary pinch-zoom fires gesture* events — swallow them on the canvas
+  ["gesturestart","gesturechange","gestureend"].forEach(ev=>dom.addEventListener(ev,(e)=>e.preventDefault(),{passive:false}));
   const ray=new THREE.Raycaster(),ndc=new THREE.Vector2();let dX=0,dY=0;
   dom.addEventListener("mousedown",(e)=>{dX=e.clientX;dY=e.clientY;});
   dom.addEventListener("click",(e)=>{if(Math.hypot(e.clientX-dX,e.clientY-dY)>6)return;const r=dom.getBoundingClientRect();ndc.x=((e.clientX-r.left)/r.width)*2-1;ndc.y=-((e.clientY-r.top)/r.height)*2+1;ray.setFromCamera(ndc,camera);const hit=ray.intersectObjects(planetMeshes,false);if(hit.length)onSelect(hit[0].object.userData.name);});
