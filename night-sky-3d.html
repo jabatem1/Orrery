@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Orrery · 3D — Night Sky Simulator</title>
+<style>
+  html,body{margin:0;padding:0;background:#05060f;-webkit-tap-highlight-color:transparent;}
+  *{box-sizing:border-box;}
+  ::selection{background:#c9a14e55;color:#ece4cf;}
+  button{transition:transform .12s ease, box-shadow .12s ease, background .15s ease;}
+  button:active{transform:scale(.965);}
+  button:focus-visible, input:focus-visible{outline:2px solid #c9a14e;outline-offset:2px;border-radius:8px;}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:22px;background:transparent;}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:linear-gradient(90deg,#26345a,#3a4a72);}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:#c9a14e;border:2px solid #ece4cf;margin-top:-6px;box-shadow:0 0 8px #c9a14e88;cursor:pointer;}
+  input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:#2c3b60;}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#c9a14e;border:2px solid #ece4cf;box-shadow:0 0 8px #c9a14e88;cursor:pointer;}
+  @media (prefers-reduced-motion: reduce){button{transition:none;}button:active{transform:none;}}
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const {useState,useEffect,useRef,useMemo,useCallback}=React;
+
+/* ============ ASTRONOMY ENGINE ============ */
+const D2R=Math.PI/180,R2D=180/Math.PI;
+const J2000=Date.UTC(2000,0,1,12,0,0);
+const OBL=23.43928*D2R;
+const daysSince=(ms)=>(ms-J2000)/86400000;
+const PLANET_DEFS=[
+ {name:"Mercury",color:0xbdb2a0,size:0.38,el:{a:[0.38709927,0],e:[0.20563593,0.00001906],I:[7.00497902,-0.00594749],L:[252.2503235,149472.67411175],w:[77.45779628,0.16047689],N:[48.33076593,-0.12534081]}},
+ {name:"Venus",color:0xead9a8,size:0.62,el:{a:[0.72333566,0],e:[0.00677672,-0.00004107],I:[3.39467605,-0.0007889],L:[181.9790995,58517.81538729],w:[131.60246718,0.00268329],N:[76.67984255,-0.27769418]}},
+ {name:"Earth",color:0x7ea9d8,size:0.65,el:{a:[1.00000261,0],e:[0.01671123,-0.00004392],I:[-0.00001531,-0.01294668],L:[100.46457166,35999.37244981],w:[102.93768193,0.32327364],N:[0,0]}},
+ {name:"Mars",color:0xd97a55,size:0.5,el:{a:[1.52371034,0],e:[0.0933941,0.00007882],I:[1.84969142,-0.00813131],L:[-4.55343205,19140.30268499],w:[-23.94362959,0.44441088],N:[49.55953891,-0.29257343]}},
+ {name:"Jupiter",color:0xdcab6e,size:1.5,el:{a:[5.202887,0],e:[0.04838624,-0.00013253],I:[1.30439695,-0.00183714],L:[34.39644051,3034.74612775],w:[14.72847983,0.21252668],N:[100.47390909,0.20469106]}},
+ {name:"Saturn",color:0xd9c98c,size:1.3,ring:true,el:{a:[9.53667594,0],e:[0.05386179,-0.00050991],I:[2.48599187,0.00193609],L:[49.95424423,1222.49362201],w:[92.59887831,-0.41897216],N:[113.66242448,-0.28867794]}},
+];
+function norm360(x){return((x%360)+360)%360;}
+function helioXYZ(el,T,Mo=null){
+ const a=el.a[0]+el.a[1]*T,e=el.e[0]+el.e[1]*T,I=(el.I[0]+el.I[1]*T)*D2R;
+ const L=el.L[0]+el.L[1]*T,wbar=el.w[0]+el.w[1]*T,N=(el.N[0]+el.N[1]*T)*D2R,w=(wbar*D2R)-N;
+ let M=Mo!==null?Mo:norm360(L-wbar)*D2R,E=M+e*Math.sin(M);
+ for(let i=0;i<10;i++)E=E-(E-e*Math.sin(E)-M)/(1-e*Math.cos(E));
+ const xv=a*(Math.cos(E)-e),yv=a*Math.sqrt(1-e*e)*Math.sin(E),v=Math.atan2(yv,xv),r=Math.hypot(xv,yv),u=v+w;
+ const cu=Math.cos(u),su=Math.sin(u),cN=Math.cos(N),sN=Math.sin(N),cI=Math.cos(I),sI=Math.sin(I);
+ return[r*(cN*cu-sN*su*cI),r*(sN*cu+cN*su*cI),r*su*sI];
+}
+const eclToEq=([x,y,z])=>[x,y*Math.cos(OBL)-z*Math.sin(OBL),y*Math.sin(OBL)+z*Math.cos(OBL)];
+function raDec(v){const r=Math.hypot(v[0],v[1],v[2]);return{ra:norm360(Math.atan2(v[1],v[0])*R2D),dec:Math.asin(v[2]/r)*R2D,dist:r};}
+function altAz(raD,decD,ms,latD,lonD){
+ const d=daysSince(ms),lst=norm360(280.46061837+360.98564736629*d+lonD);
+ const H=(lst-raD)*D2R,phi=latD*D2R,dec=decD*D2R;
+ const alt=Math.asin(Math.sin(phi)*Math.sin(dec)+Math.cos(phi)*Math.cos(dec)*Math.cos(H))*R2D;
+ const azS=Math.atan2(Math.sin(H),Math.cos(H)*Math.sin(phi)-Math.tan(dec)*Math.cos(phi))*R2D;
+ return{alt,az:norm360(azS+180)};
+}
+const ECL_CON=[[29,"Pisces"],[53,"Aries"],[90,"Taurus"],[118,"Gemini"],[138,"Cancer"],[174,"Leo"],[218,"Virgo"],[241,"Libra"],[248,"Scorpius"],[266,"Ophiuchus"],[300,"Sagittarius"],[328,"Capricornus"],[352,"Aquarius"],[360,"Pisces"]];
+const eclConstellation=(lon)=>{const l=norm360(lon);for(const[b,n]of ECL_CON)if(l<b)return n;return"Pisces";};
+function skyState(ms,latD,lonD){
+ const T=daysSince(ms)/36525,earth=helioXYZ(PLANET_DEFS[2].el,T),sunGeo=[-earth[0],-earth[1],-earth[2]];
+ const sunEq=raDec(eclToEq(sunGeo));
+ const sun={name:"Sun",...sunEq,...altAz(sunEq.ra,sunEq.dec,ms,latD,lonD),eclLon:norm360(Math.atan2(sunGeo[1],sunGeo[0])*R2D)};
+ const planets=PLANET_DEFS.map((p,i)=>{
+  const h=helioXYZ(p.el,T);
+  if(i===2)return{...p,helio:h,isEarth:true};
+  const g=[h[0]-earth[0],h[1]-earth[1],h[2]-earth[2]],eq=raDec(eclToEq(g)),aa=altAz(eq.ra,eq.dec,ms,latD,lonD);
+  const eclLon=norm360(Math.atan2(g[1],g[0])*R2D);
+  const dot=(g[0]*sunGeo[0]+g[1]*sunGeo[1]+g[2]*sunGeo[2])/(eq.dist*Math.hypot(...sunGeo));
+  return{...p,helio:h,geo:g,...eq,...aa,eclLon,elong:Math.acos(Math.max(-1,Math.min(1,dot)))*R2D};
+ });
+ const d=daysSince(ms),Lm=(218.316+13.176396*d)*D2R,Mm=(134.963+13.064993*d)*D2R,F=(93.272+13.22935*d)*D2R;
+ const lam=Lm+6.289*D2R*Math.sin(Mm),bet=5.128*D2R*Math.sin(F);
+ const mEq=raDec(eclToEq([Math.cos(bet)*Math.cos(lam),Math.cos(bet)*Math.sin(lam),Math.sin(bet)]));
+ const moonLon=norm360(lam*R2D),phase=norm360(moonLon-sun.eclLon);
+ const moon={name:"Moon",...mEq,...altAz(mEq.ra,mEq.dec,ms,latD,lonD),eclLon:moonLon,phase,illum:(1-Math.cos(phase*D2R))/2};
+ return{earth,sun,moon,planets,T};
+}
+
+/* ============ STARS ============ */
+const STARS=[
+ ["Sirius",101.287,-16.716,-1.46,8.6],["Procyon",114.825,5.225,0.34,11.5],["Betelgeuse",88.793,7.407,0.5,548],
+ ["Rigel",78.634,-8.202,0.13,860],["Bellatrix",81.283,6.35,1.64,250],["Alnitak",85.19,-1.943,1.77,1260],
+ ["Alnilam",84.053,-1.202,1.69,1975],["Mintaka",83.002,-0.299,2.23,1200],["Saiph",86.939,-9.67,2.09,650],
+ ["Aldebaran",68.98,16.509,0.85,65],["Capella",79.172,45.998,0.08,43],["Pollux",116.329,28.026,1.14,34],
+ ["Castor",113.65,31.888,1.58,51],["Alhena",99.428,16.399,1.93,109],["Mebsuta",100.983,25.131,3.0,840],
+ ["Tejat",95.74,22.514,2.87,230],["Wasat",110.031,21.982,3.53,60],["Regulus",152.093,11.967,1.35,79],
+ ["Spica",201.298,-11.161,0.97,250],["Antares",247.352,-26.432,1.09,550],["Arcturus",213.915,19.182,-0.05,37],
+ ["Vega",279.234,38.784,0.03,25],["Altair",297.696,8.868,0.77,17],["Deneb",310.358,45.28,1.25,2615],
+ ["Sadr",305.557,40.257,2.23,1800],["Gienah Cyg",311.553,33.97,2.48,72],["Delta Cyg",296.244,45.131,2.87,165],
+ ["Albireo",292.68,27.96,3.05,430],["Fomalhaut",344.413,-29.622,1.16,25],["Dubhe",165.932,61.751,1.79,123],
+ ["Merak",165.46,56.382,2.37,80],["Phecda",178.458,53.695,2.44,83],["Megrez",183.857,57.033,3.31,81],
+ ["Alioth",193.507,55.96,1.77,83],["Mizar",200.981,54.926,2.27,86],["Alkaid",206.885,49.313,1.86,104],
+ ["Caph",2.295,59.15,2.27,54],["Schedar",10.127,56.537,2.24,228],["Gamma Cas",14.177,60.717,2.47,550],
+ ["Ruchbah",21.454,60.235,2.68,99],["Segin",28.599,63.67,3.38,440],["Polaris",37.955,89.264,1.98,433],
+ ["Algol",47.042,40.956,2.12,90],["Mirfak",51.081,49.861,1.8,510],["Denebola",177.265,14.572,2.14,36],
+ ["Rasalhague",263.734,12.56,2.07,49],["Nunki",283.816,-26.297,2.06,228],["Shaula",263.402,-37.104,1.62,570],
+].map(([name,ra,dec,mag,dist])=>({name,ra,dec,mag,dist}));
+const starByName=Object.fromEntries(STARS.map(s=>[s.name,s]));
+const BRIGHTEST=[...STARS].sort((a,b)=>a.mag-b.mag).slice(0,10).map(s=>s.name);
+const brightestSet=new Set(BRIGHTEST);
+// Facts for the tappable bright stars. radius/luminosity are approximate published values.
+const STAR_FACTS={
+ "Sirius":{type:"A1V — white main-sequence",radius:"1.7 R☉",lum:"25× Sun",fact:"The brightest star in Earth's night sky. Its faint companion, Sirius B, is a white dwarf that orbits it every 50 years.",wiki:"Sirius"},
+ "Procyon":{type:"F5 IV–V — subgiant",radius:"2.0 R☉",lum:"7× Sun",fact:"One of our nearest stellar neighbours; like Sirius, it hides a white-dwarf companion.",wiki:"Procyon"},
+ "Betelgeuse":{type:"M1–2 Ia — red supergiant",radius:"≈750 R☉ (varies)",lum:"≈100,000× Sun",fact:"So huge that placed at the Sun's position it would swallow the orbits of Mercury, Venus, Earth, and Mars. It will one day go supernova.",wiki:"Betelgeuse"},
+ "Rigel":{type:"B8 Ia — blue supergiant",radius:"≈75 R☉",lum:"≈120,000× Sun",fact:"Orion's brilliant foot: a blue supergiant that outshines our Sun a hundred-thousand-fold from ~860 light-years away.",wiki:"Rigel"},
+ "Bellatrix":{type:"B2 III — blue giant",radius:"≈5.8 R☉",lum:"≈9,000× Sun",fact:"The 'Amazon Star' — Orion's other shoulder, far closer to us than the belt stars behind it.",wiki:"Bellatrix"},
+ "Alnitak":{type:"O9.5 Ib — hot supergiant",radius:"≈20 R☉",lum:"≈250,000× Sun",fact:"The belt's eastern star, a rare O-type supergiant whose ultraviolet glare lights up the Flame Nebula beside it.",wiki:"Alnitak"},
+ "Alnilam":{type:"B0 Ia — blue supergiant",radius:"≈32 R☉",lum:"≈500,000× Sun",fact:"The middle of the belt and the farthest of the three — among the most luminous stars you can see with the naked eye.",wiki:"Alnilam"},
+ "Mintaka":{type:"O9.5 II + B — multiple",radius:"≈16 R☉",lum:"≈190,000× Sun",fact:"The belt's western star sits almost exactly on the celestial equator — it rises due east and sets due west everywhere on Earth.",wiki:"Mintaka"},
+ "Saiph":{type:"B0.5 Ia — blue supergiant",radius:"≈22 R☉",lum:"≈56,000× Sun",fact:"Orion's other foot. It's actually hotter than Rigel — it only looks fainter because more of its light is ultraviolet.",wiki:"Saiph"},
+ "Aldebaran":{type:"K5 III — orange giant",radius:"≈44 R☉",lum:"≈440× Sun",fact:"The glowing eye of Taurus. It only appears to sit in the Hyades cluster — it's really 90 ly in front of them.",wiki:"Aldebaran"},
+ "Capella":{type:"G III + G III — giant binary",radius:"≈12 R☉ (Aa)",lum:"≈79× Sun",fact:"Looks like one golden star but is two sun-like giants circling each other every 104 days, plus a pair of red dwarfs.",wiki:"Capella"},
+ "Pollux":{type:"K0 III — orange giant",radius:"≈9 R☉",lum:"≈33× Sun",fact:"The nearest giant star to the Sun — and it hosts a confirmed exoplanet, Pollux b.",wiki:"Pollux_(star)"},
+ "Castor":{type:"A1V — sextuple system",radius:"≈2.4 R☉ (A)",lum:"≈34× Sun (A)",fact:"Not one star but six — three tight pairs bound in a slow gravitational dance.",wiki:"Castor_(star)"},
+ "Alhena":{type:"A0 IV — subgiant",radius:"≈3.3 R☉",lum:"≈120× Sun",fact:"Gemini's 'foot'; a star just beginning its evolution off the main sequence.",wiki:"Gamma_Geminorum"},
+ "Mebsuta":{type:"G8 Ib — yellow supergiant",radius:"≈140 R☉",lum:"≈8,500× Sun",fact:"Looks modest, but it's the true giant of Gemini — a supergiant 25× farther away than Pollux.",wiki:"Epsilon_Geminorum"},
+ "Tejat":{type:"M3 III — red giant",radius:"≈80 R☉",lum:"≈1,500× Sun",fact:"A cool red giant marking Castor's heel, slowly pulsing in brightness.",wiki:"Mu_Geminorum"},
+ "Wasat":{type:"F0 IV — subgiant",radius:"≈2.6 R☉",lum:"≈8× Sun",fact:"Sits within 0.2° of the ecliptic — planets and the Moon regularly brush past it. Pluto was discovered a short hop away.",wiki:"Delta_Geminorum"},
+ "Regulus":{type:"B8 IV — fast rotator",radius:"≈3–4 R☉ (oblate)",lum:"≈300× Sun",fact:"Spins in under 16 hours — so fast it bulges into an egg shape. The 'heart of the Lion' sits nearly on the ecliptic.",wiki:"Regulus"},
+ "Spica":{type:"B1 III–IV — blue binary",radius:"≈7.5 R☉",lum:"≈20,000× Sun (combined)",fact:"Two hot blue stars whirling so close they distort each other into egg shapes, orbiting every four days.",wiki:"Spica"},
+ "Antares":{type:"M1.5 Iab — red supergiant",radius:"≈680 R☉",lum:"≈75,000× Sun",fact:"'Rival of Mars' — its red glare is often mistaken for the planet when they share the sky.",wiki:"Antares"},
+ "Arcturus":{type:"K1.5 III — orange giant",radius:"≈25 R☉",lum:"≈170× Sun",fact:"Brightest star of the northern celestial hemisphere, racing through the galaxy on a different orbit from the Sun's.",wiki:"Arcturus"},
+ "Vega":{type:"A0V — white main-sequence",radius:"2.4 R☉",lum:"40× Sun",fact:"Once the zero-point of the magnitude scale, and Earth's pole star ~12,000 years ago (and again ~12,000 years from now).",wiki:"Vega"},
+ "Altair":{type:"A7V — white main-sequence",radius:"1.8 R☉",lum:"11× Sun",fact:"Spins once every ~9 hours — so fast it's visibly flattened into an oblate shape.",wiki:"Altair"},
+ "Deneb":{type:"A2 Ia — white supergiant",radius:"≈200 R☉",lum:"≈200,000× Sun",fact:"One of the most luminous stars visible to the naked eye — still brilliant from roughly 2,600 light-years away.",wiki:"Deneb"},
+ "Sadr":{type:"F8 Ib — yellow supergiant",radius:"≈150 R☉",lum:"≈33,000× Sun",fact:"The heart of the Northern Cross, embedded in a glowing field of nebulosity.",wiki:"Gamma_Cygni"},
+ "Gienah Cyg":{type:"K3 III — orange giant",radius:"≈11 R☉",lum:"≈62× Sun",fact:"The Swan's eastern wingtip — it looks like Deneb's peer but is 36× closer.",wiki:"Epsilon_Cygni"},
+ "Delta Cyg":{type:"B9.5 III — binary",radius:"≈5 R☉",lum:"≈155× Sun",fact:"Around the year 11,250 this will be Earth's pole star, as precession swings the axis its way.",wiki:"Delta_Cygni"},
+ "Albireo":{type:"K3 II + B8 — double",radius:"≈70 R☉ (A)",lum:"≈1,300× Sun (A)",fact:"The telescope showpiece: a gold star and a sapphire star in the same eyepiece field.",wiki:"Albireo"},
+ "Fomalhaut":{type:"A3V — white main-sequence",radius:"1.8 R☉",lum:"16× Sun",fact:"Ringed by a vast disc of debris — an infant planetary system caught mid-construction.",wiki:"Fomalhaut"},
+ "Dubhe":{type:"K0 III — orange giant",radius:"≈30 R☉",lum:"≈300× Sun",fact:"One of the two Pointers to Polaris — and one of the two Dipper stars that isn't part of the family, moving its own way.",wiki:"Alpha_Ursae_Majoris"},
+ "Merak":{type:"A1V — main-sequence",radius:"2.8 R☉",lum:"≈68× Sun",fact:"The other Pointer: draw a line from Merak through Dubhe and you land on the North Star.",wiki:"Beta_Ursae_Majoris"},
+ "Phecda":{type:"A0V — main-sequence",radius:"3.0 R☉",lum:"≈65× Sun",fact:"A core member of the Ursa Major Moving Group — the Dipper stars that really do travel together.",wiki:"Phecda"},
+ "Megrez":{type:"A3V — main-sequence",radius:"1.9 R☉",lum:"≈14× Sun",fact:"The dimmest of the seven — the hinge where the Dipper's handle meets its bowl.",wiki:"Megrez"},
+ "Alioth":{type:"A1 III–IVp — peculiar",radius:"≈4 R☉",lum:"≈100× Sun",fact:"The brightest star of the Big Dipper, with a strange shifting magnetic field that smears its spectrum.",wiki:"Alioth"},
+ "Mizar":{type:"A2V — quadruple",radius:"≈2.4 R☉",lum:"≈33× Sun",fact:"With faint Alcor beside it, the classic naked-eye vision test — and the first double star ever found by telescope.",wiki:"Mizar_and_Alcor"},
+ "Alkaid":{type:"B3V — hot main-sequence",radius:"≈3.4 R☉",lum:"≈600× Sun",fact:"The tip of the handle — young, hot, and (like Dubhe) not a member of the Dipper's moving group.",wiki:"Eta_Ursae_Majoris"},
+ "Caph":{type:"F2 III–IV — subgiant",radius:"≈3.5 R☉",lum:"≈28× Sun",fact:"The nearest star of Cassiopeia's W, a fast-spinning star flattened at its poles.",wiki:"Beta_Cassiopeiae"},
+ "Schedar":{type:"K0 IIIa — orange giant",radius:"≈45 R☉",lum:"≈850× Sun",fact:"The Queen's heart — a cool giant glowing steadily at the W's bend.",wiki:"Alpha_Cassiopeiae"},
+ "Gamma Cas":{type:"B0.5 IVe — eruptive",radius:"≈10 R☉",lum:"≈34,000× Sun",fact:"An unstable star spinning so fast it flings gas into a glowing disc — the prototype of its whole variable class.",wiki:"Gamma_Cassiopeiae"},
+ "Ruchbah":{type:"A5 IV — subgiant",radius:"≈3.9 R☉",lum:"≈63× Sun",fact:"An eclipsing pair whose light dips slightly every 460 days.",wiki:"Delta_Cassiopeiae"},
+ "Segin":{type:"B3 III — blue giant",radius:"≈6 R☉",lum:"≈2,500× Sun",fact:"The faint end of the W — a hot blue giant over 400 light-years out.",wiki:"Epsilon_Cassiopeiae"},
+ "Polaris":{type:"F7 Ib — Cepheid supergiant",radius:"≈46 R☉",lum:"≈1,200× Sun",fact:"The North Star: a pulsating supergiant that happens to sit within 1° of Earth's spin axis — for now.",wiki:"Polaris"},
+ "Algol":{type:"B8V — eclipsing triple",radius:"≈2.9 R☉ (A)",lum:"≈180× Sun",fact:"The 'Demon Star' — every 2.87 days a companion crosses in front and it visibly dims for hours, a rhythm known since antiquity.",wiki:"Algol"},
+ "Mirfak":{type:"F5 Ib — yellow supergiant",radius:"≈68 R☉",lum:"≈5,000× Sun",fact:"The brightest star of Perseus, anchoring a loose young cluster you can sweep with binoculars.",wiki:"Alpha_Persei"},
+ "Denebola":{type:"A3V — main-sequence",radius:"1.7 R☉",lum:"15× Sun",fact:"The Lion's tail — a young star ringed by dusty debris.",wiki:"Denebola"},
+ "Rasalhague":{type:"A5 III — giant",radius:"≈2.6 R☉",lum:"≈25× Sun",fact:"The head of Ophiuchus — the 13th constellation the Sun actually passes through each December.",wiki:"Rasalhague"},
+ "Nunki":{type:"B2.5V — hot main-sequence",radius:"≈4.5 R☉",lum:"≈3,300× Sun",fact:"Second-brightest star of Sagittarius, close enough to the ecliptic to be occulted by planets.",wiki:"Sigma_Sagittarii"},
+ "Shaula":{type:"B1.5 IV — triple",radius:"≈9 R☉",lum:"≈36,000× Sun",fact:"The Scorpion's stinger — from mid-northern latitudes it barely lifts above the southern horizon.",wiki:"Lambda_Scorpii"},
+};
+const FEATURED={
+ Orion:{stars:["Betelgeuse","Bellatrix","Mintaka","Alnilam","Alnitak","Rigel","Saiph"],lines:[["Betelgeuse","Bellatrix"],["Bellatrix","Mintaka"],["Mintaka","Alnilam"],["Alnilam","Alnitak"],["Alnitak","Betelgeuse"],["Mintaka","Rigel"],["Alnitak","Saiph"],["Rigel","Saiph"]],blurb:"Looks like one object; spans ~1,700 ly of depth. Alnilam (middle belt) is ~8× farther than Bellatrix."},
+ "Big Dipper":{stars:["Dubhe","Merak","Phecda","Megrez","Alioth","Mizar","Alkaid"],lines:[["Dubhe","Merak"],["Merak","Phecda"],["Phecda","Megrez"],["Megrez","Dubhe"],["Megrez","Alioth"],["Alioth","Mizar"],["Mizar","Alkaid"]],blurb:"Rare exception: five of the seven are a true family — the Ursa Major Moving Group, ~80 ly away. Dubhe and Alkaid are outsiders."},
+ Gemini:{stars:["Castor","Pollux","Wasat","Alhena","Mebsuta","Tejat"],lines:[["Castor","Mebsuta"],["Mebsuta","Tejat"],["Pollux","Wasat"],["Wasat","Alhena"],["Castor","Pollux"]],blurb:"The 'twins' aren't neighbors: Pollux 34 ly, Castor 51 ly. Mebsuta — dimmest-looking — is the giant at ~840 ly."},
+ Cygnus:{stars:["Deneb","Sadr","Gienah Cyg","Delta Cyg","Albireo"],lines:[["Deneb","Sadr"],["Sadr","Albireo"],["Sadr","Gienah Cyg"],["Sadr","Delta Cyg"]],blurb:"Deneb: ~2,600 ly away yet brilliant — ~200,000× the Sun. Gienah looks similar but is 36× closer."},
+ Cassiopeia:{stars:["Caph","Schedar","Gamma Cas","Ruchbah","Segin"],lines:[["Caph","Schedar"],["Schedar","Gamma Cas"],["Gamma Cas","Ruchbah"],["Ruchbah","Segin"]],blurb:"The famous W spans a 10× range in depth — from Caph at 54 ly to Gamma Cas at ~550 ly."},
+};
+const compass16=(az)=>["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(norm360(az)/22.5)%16];
+const fmtET=(ms)=>new Date(ms).toLocaleString("en-US",{month:"short",day:"numeric",year:"numeric",hour:"numeric",minute:"2-digit"});
+const easeInOut=(t)=>t*t*(3-2*t);
+const addMonths=(ms,n)=>{const d=new Date(ms);d.setMonth(d.getMonth()+n);return d.getTime();};
+const C={bg:"#05060f",panel:"#0c1226cc",panel2:"#0a1020",line:"#26345a",cream:"#ece4cf",dim:"#8e97b3",brass:"#c9a14e",brassSoft:"#c9a14e55",sel:"#ffd97a"};
+
+/* ============ 3D SCENE ============ */
+function Scene3D({getState,selectedRef,onSelect,showOrbits,showEcliptic,focusEarth}){
+ const mountRef=useRef(null),api=useRef({});
+ useEffect(()=>{
+  const mount=mountRef.current,W=mount.clientWidth,H=400;
+  const scene=new THREE.Scene();scene.background=new THREE.Color(0x05060f);
+  const camera=new THREE.PerspectiveCamera(50,W/H,0.01,3000);
+  const renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  mount.appendChild(renderer.domElement);
+  const SCALE=9;
+  const projP=(p)=>{const r=Math.hypot(p[0],p[1],p[2])||1e-6,rs=Math.sqrt(r/9.6)*SCALE,k=rs/r;return new THREE.Vector3(p[0]*k,p[2]*k,-p[1]*k);};
+  // starfield
+  const sGeo=new THREE.BufferGeometry(),sC=1800,sP=new Float32Array(sC*3),sCol=new Float32Array(sC*3);
+  for(let i=0;i<sC;i++){const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1),R=900;
+   sP[i*3]=R*Math.sin(ph)*Math.cos(th);sP[i*3+1]=R*Math.cos(ph);sP[i*3+2]=R*Math.sin(ph)*Math.sin(th);
+   const c=0.6+Math.random()*0.4,t=Math.random();sCol[i*3]=c;sCol[i*3+1]=c*(0.92+t*0.08);sCol[i*3+2]=c*(0.85+t*0.15);}
+  sGeo.setAttribute("position",new THREE.BufferAttribute(sP,3));sGeo.setAttribute("color",new THREE.BufferAttribute(sCol,3));
+  scene.add(new THREE.Points(sGeo,new THREE.PointsMaterial({size:2,vertexColors:true,sizeAttenuation:false})));
+  const mwGeo=new THREE.BufferGeometry(),mwC=1400,mwP=new Float32Array(mwC*3);
+  for(let i=0;i<mwC;i++){const a=Math.random()*2*Math.PI,band=(Math.random()-0.5)*0.34,R=880,x=R*Math.cos(a),y=R*band,z=R*Math.sin(a);
+   const ty=y*Math.cos(1.05)-z*Math.sin(1.05),tz=y*Math.sin(1.05)+z*Math.cos(1.05);mwP[i*3]=x;mwP[i*3+1]=ty;mwP[i*3+2]=tz;}
+  mwGeo.setAttribute("position",new THREE.BufferAttribute(mwP,3));
+  scene.add(new THREE.Points(mwGeo,new THREE.PointsMaterial({size:1.5,color:0x9fb0d8,transparent:true,opacity:0.32,sizeAttenuation:false})));
+  // sun
+  const sun=new THREE.Mesh(new THREE.SphereGeometry(1.5,32,32),new THREE.MeshBasicMaterial({color:0xffd98a}));scene.add(sun);
+  const gc=document.createElement("canvas");gc.width=gc.height=128;const gx=gc.getContext("2d");
+  const gg=gx.createRadialGradient(64,64,0,64,64,64);gg.addColorStop(0,"rgba(255,228,150,0.95)");gg.addColorStop(0.3,"rgba(245,180,80,0.5)");gg.addColorStop(1,"rgba(245,180,80,0)");
+  gx.fillStyle=gg;gx.fillRect(0,0,128,128);
+  const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(gc),transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));
+  glow.scale.set(9,9,1);scene.add(glow);
+  scene.add(new THREE.PointLight(0xfff0d0,2.4,0,1.2));scene.add(new THREE.AmbientLight(0x404a6a,0.9));
+  const grid=new THREE.PolarGridHelper(SCALE*3.2,16,6,64,0x2a3a66,0x1c2848);grid.material.transparent=true;grid.material.opacity=0.5;scene.add(grid);
+  const orbitLines=[],planetMeshes=[],labels=[];const T0=getState().T;
+  PLANET_DEFS.forEach((p)=>{
+   const pts=[];for(let k=0;k<=240;k++)pts.push(projP(helioXYZ(p.el,T0,(k/240)*2*Math.PI)));
+   const ol=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:p.color,transparent:true,opacity:0.42}));
+   scene.add(ol);orbitLines.push(ol);
+   const mesh=new THREE.Mesh(new THREE.SphereGeometry(Math.max(0.28,p.size*0.42),24,24),new THREE.MeshStandardMaterial({color:p.color,roughness:0.85,metalness:0.1,emissive:new THREE.Color(p.color).multiplyScalar(0.12)}));
+   mesh.userData.name=p.name;scene.add(mesh);planetMeshes.push(mesh);
+   if(p.ring){const ring=new THREE.Mesh(new THREE.RingGeometry(0.8,1.3,40),new THREE.MeshBasicMaterial({color:0xcdbf8e,side:THREE.DoubleSide,transparent:true,opacity:0.55}));ring.rotation.x=Math.PI/2-0.45;mesh.add(ring);}
+   const halo=new THREE.Mesh(new THREE.RingGeometry(0.55,0.7,32),new THREE.MeshBasicMaterial({color:0xffd97a,side:THREE.DoubleSide,transparent:true,opacity:0}));halo.userData.isHalo=true;mesh.add(halo);
+  });
+  const sight=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3()]),new THREE.LineBasicMaterial({color:0xffd97a,transparent:true,opacity:0.85}));scene.add(sight);
+  let theta=0.9,phi=0.85,radius=70,target=new THREE.Vector3(),dragging=false,lastX=0,lastY=0,pinch=0;
+  const dom=renderer.domElement;
+  const setCam=()=>{camera.position.set(target.x+radius*Math.sin(phi)*Math.cos(theta),target.y+radius*Math.cos(phi),target.z+radius*Math.sin(phi)*Math.sin(theta));camera.lookAt(target);};
+  const down=(e)=>{dragging=true;const t=e.touches?e.touches[0]:e;lastX=t.clientX;lastY=t.clientY;};
+  const move=(e)=>{if(!dragging)return;const t=e.touches?e.touches[0]:e;theta-=(t.clientX-lastX)*0.006;phi-=(t.clientY-lastY)*0.006;phi=Math.max(0.08,Math.min(Math.PI-0.08,phi));lastX=t.clientX;lastY=t.clientY;};
+  const up=()=>{dragging=false;pinch=0;};
+  const wheel=(e)=>{e.preventDefault();radius=Math.max(8,Math.min(600,radius*(1+Math.sign(e.deltaY)*0.08)));};
+  const tmove=(e)=>{if(e.touches.length===2){const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);if(pinch)radius=Math.max(8,Math.min(600,radius*(pinch/d)));pinch=d;}else move(e);};
+  dom.addEventListener("mousedown",down);window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);
+  dom.addEventListener("wheel",wheel,{passive:false});
+  dom.addEventListener("touchstart",down,{passive:true});dom.addEventListener("touchmove",tmove,{passive:true});dom.addEventListener("touchend",up);
+  const ray=new THREE.Raycaster(),ndc=new THREE.Vector2();let dX=0,dY=0;
+  dom.addEventListener("mousedown",(e)=>{dX=e.clientX;dY=e.clientY;});
+  dom.addEventListener("click",(e)=>{if(Math.hypot(e.clientX-dX,e.clientY-dY)>6)return;const r=dom.getBoundingClientRect();ndc.x=((e.clientX-r.left)/r.width)*2-1;ndc.y=-((e.clientY-r.top)/r.height)*2+1;ray.setFromCamera(ndc,camera);const hit=ray.intersectObjects(planetMeshes,false);if(hit.length)onSelect(hit[0].object.userData.name);});
+  const mkLabel=(text)=>{const cv=document.createElement("canvas");cv.width=256;cv.height=64;const cx=cv.getContext("2d");cx.font="28px Georgia,serif";cx.fillStyle="#ece4cf";cx.textAlign="center";cx.fillText(text,128,40);const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),transparent:true,depthWrite:false}));sp.scale.set(5,1.25,1);return sp;};
+  PLANET_DEFS.forEach((p)=>{const l=mkLabel(p.name);scene.add(l);labels.push(l);});
+  let raf;
+  const render=()=>{
+   const st=getState(),positions=[];
+   PLANET_DEFS.forEach((p,i)=>{
+    const sp=projP(st.planets[i].helio);positions[i]=sp;planetMeshes[i].position.copy(sp);
+    labels[i].position.set(sp.x,sp.y+1.4,sp.z);
+    const sel=st.planets[i].name===selectedRef.current,halo=planetMeshes[i].children.find(c=>c.userData.isHalo);
+    if(halo){halo.material.opacity=sel?0.9:0;halo.lookAt(camera.position);}
+    labels[i].material.opacity=sel?1:0.62;orbitLines[i].material.opacity=showOrbits.current?(sel?0.85:0.32):0;
+   });
+   grid.visible=showEcliptic.current;
+   const eIdx=2,earthPos=positions[eIdx],selName=selectedRef.current,selIdx=PLANET_DEFS.findIndex(p=>p.name===selName);
+   if(selIdx>=0&&selIdx!==eIdx){const tp=positions[selIdx],dir=tp.clone().sub(earthPos).normalize(),end=tp.clone().add(dir.multiplyScalar(40));sight.geometry.setFromPoints([earthPos,end]);sight.visible=true;}else sight.visible=false;
+   const goal=focusEarth.current?positions[eIdx]:new THREE.Vector3();target.lerp(goal,0.08);
+   if(!dragging)theta+=0.0008;setCam();renderer.render(scene,camera);raf=requestAnimationFrame(render);
+  };
+  render();
+  api.current={resize:()=>{const w=mount.clientWidth;renderer.setSize(w,H);camera.aspect=w/H;camera.updateProjectionMatrix();},reset:()=>{theta=0.9;phi=0.85;radius=70;},topDown:()=>{phi=0.12;theta=0;radius=80;}};
+  const ro=new ResizeObserver(()=>api.current.resize());ro.observe(mount);
+  return()=>{cancelAnimationFrame(raf);ro.disconnect();window.removeEventListener("mousemove",move);window.removeEventListener("mouseup",up);renderer.dispose();if(renderer.domElement.parentNode)mount.removeChild(renderer.domElement);};
+ },[]);
+ return(
+  <div ref={mountRef} style={{width:"100%",height:400,borderRadius:12,overflow:"hidden",position:"relative"}}>
+   <div style={{position:"absolute",left:10,top:8,display:"flex",gap:6,zIndex:2}}>
+    <button onClick={()=>api.current.reset&&api.current.reset()} style={miniBtn}>↺ reset</button>
+    <button onClick={()=>api.current.topDown&&api.current.topDown()} style={miniBtn}>⊕ top-down</button>
+   </div>
+  </div>
+ );
+}
+const miniBtn={background:"#11193366",color:C.cream,border:`1px solid ${C.line}`,borderRadius:7,padding:"4px 9px",fontSize:11,fontFamily:"Georgia,serif",cursor:"pointer",backdropFilter:"blur(4px)"};
+
+function useCanvas(draw,deps){
+ const ref=useRef(null);
+ useEffect(()=>{const cv=ref.current;if(!cv)return;const dpr=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;if(cv.width!==w*dpr||cv.height!==h*dpr){cv.width=w*dpr;cv.height=h*dpr;}const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);draw(ctx,w,h);},deps);
+ return ref;
+}
+
+/* ============ WINDOWED SWIPEABLE SKY ============ */
+const FOV=120; // degrees of azimuth shown at once
+function SkyView({state,selected,onSelect,timeMs,lat,lon,showTrail,mode,centerAz,setCenterAz,compassOn,onToggleCompass,onDueSouth,onStarTap,selStar,onConstTap,selConst,linesOn}){
+ const hitRef=useRef([]),dragRef=useRef(null);
+ const draw=useCallback((ctx,w,h)=>{
+  const ALT_MIN=-8,ALT_MAX=88;
+  const azC=centerAz;
+  // map azimuth (relative to window center) to x
+  const relAz=(az)=>{let d=norm360(az)-azC;if(d>180)d-=360;if(d<-180)d+=360;return d;};
+  const X=(az)=>w/2+(relAz(az)/FOV)*w;
+  const Y=(alt)=>h*(1-(alt-ALT_MIN)/(ALT_MAX-ALT_MIN));
+  const vis=(az)=>Math.abs(relAz(az))<=FOV/2+4;
+  const darkness=Math.max(0,Math.min(1,(-state.sun.alt-2)/10));
+  const grd=ctx.createLinearGradient(0,0,0,Y(0));
+  if(darkness>0.95){grd.addColorStop(0,"#070b18");grd.addColorStop(1,"#0c1226");}
+  else if(darkness>0){grd.addColorStop(0,`rgb(${14+40*(1-darkness)},${18+55*(1-darkness)},${40+80*(1-darkness)})`);grd.addColorStop(1,`rgb(${50+120*(1-darkness)},${45+95*(1-darkness)},${60+70*(1-darkness)})`);}
+  else{grd.addColorStop(0,"#3d6ea5");grd.addColorStop(1,"#9cb8d4");}
+  ctx.fillStyle=grd;ctx.fillRect(0,0,w,Y(0));
+  ctx.fillStyle="#0a0f14";ctx.fillRect(0,Y(0),w,h-Y(0));
+  ctx.strokeStyle="#3a4a64";ctx.lineWidth=1.4;ctx.beginPath();ctx.moveTo(0,Y(0));ctx.lineTo(w,Y(0));ctx.stroke();
+  ctx.strokeStyle="#ffffff10";ctx.setLineDash([2,6]);
+  [30,60].forEach(a=>{ctx.beginPath();ctx.moveTo(0,Y(a));ctx.lineTo(w,Y(a));ctx.stroke();ctx.fillStyle="#ffffff30";ctx.font="9px ui-monospace,monospace";ctx.fillText(`${a}°`,4,Y(a)-3);});
+  ctx.setLineDash([]);
+  // cardinal ticks within window
+  ctx.font="bold 12px Georgia,serif";
+  [[0,"N"],[45,"NE"],[90,"E"],[135,"SE"],[180,"S"],[225,"SW"],[270,"W"],[315,"NW"]].forEach(([az,t])=>{
+   if(!vis(az))return;ctx.fillStyle=t.length===1?C.brass:"#9a8650";
+   ctx.fillText(t,X(az)-(t.length*4),Y(0)+16);ctx.strokeStyle="#3a4a6488";ctx.beginPath();ctx.moveTo(X(az),Y(0));ctx.lineTo(X(az),Y(0)+5);ctx.stroke();
+  });
+  const showPlanets=mode==="planets";
+  // ecliptic only in planet mode
+  if(showPlanets){
+   ctx.strokeStyle=C.brassSoft;ctx.lineWidth=1.6;ctx.setLineDash([7,5]);
+   let pen=false;ctx.beginPath();
+   for(let L=0;L<=360;L+=2){const eq=raDec(eclToEq([Math.cos(L*D2R),Math.sin(L*D2R),0])),aa=altAz(eq.ra,eq.dec,timeMs,lat,lon);
+    if(aa.alt<ALT_MIN||!vis(aa.az)){pen=false;continue;}const x=X(aa.az),y=Y(aa.alt);if(!pen){ctx.moveTo(x,y);pen=true;}else ctx.lineTo(x,y);}
+   ctx.stroke();ctx.setLineDash([]);
+  }
+  // stars
+  const starPos={},starHits=[];
+  if(darkness>0.05){
+   STARS.forEach(s=>{
+    const aa=altAz(s.ra,s.dec,timeMs,lat,lon);starPos[s.name]=aa;if(aa.alt<ALT_MIN||!vis(aa.az))return;
+    const bright=brightestSet.has(s.name),hl=mode==="stars"&&bright,isSel=mode==="stars"&&s.name===selStar;
+    const baseSz=Math.max(0.8,2.8-s.mag*0.55),sz=hl?baseSz+1.8:baseSz;
+    if(hl){const gx2=ctx.createRadialGradient(X(aa.az),Y(aa.alt),0,X(aa.az),Y(aa.alt),10);gx2.addColorStop(0,"#ffe9a880");gx2.addColorStop(1,"#ffe9a800");ctx.fillStyle=gx2;ctx.beginPath();ctx.arc(X(aa.az),Y(aa.alt),10,0,7);ctx.fill();}
+    if(mode==="stars")starHits.push({x:X(aa.az),y:Y(aa.alt),name:s.name,kind:"star"}); // every star tappable
+    if(isSel){ctx.strokeStyle=C.sel;ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(X(aa.az),Y(aa.alt),12,0,7);ctx.stroke();}
+    ctx.fillStyle=(hl||isSel)?"#fff0c0":`rgba(236,228,207,${(0.85-s.mag*0.12)*darkness})`;
+    ctx.beginPath();ctx.arc(X(aa.az),Y(aa.alt),isSel?Math.max(sz,2.6):sz,0,7);ctx.fill();
+    if(hl||isSel||(mode==="planets"&&s.mag<1.0)){ctx.fillStyle=(hl||isSel)?C.sel:`rgba(142,151,179,${0.8*darkness})`;ctx.font=`${(hl||isSel)?"bold ":""}10px Georgia,serif`;ctx.fillText(s.name,X(aa.az)+5,Y(aa.alt)-4);}
+   });
+   // constellation lines: planets mode always; stars mode when linesOn
+   if(showPlanets||(mode==="stars"&&linesOn)){
+    ctx.lineWidth=0.8;
+    Object.entries(FEATURED).forEach(([cname,f])=>{
+     f.lines.forEach(([a,b])=>{const A=starPos[a],B=starPos[b];if(!A||!B)return;if(!vis(A.az)&&!vis(B.az))return;ctx.strokeStyle=`rgba(91,134,196,${(mode==="stars"?0.5:0.35)*darkness})`;ctx.beginPath();ctx.moveTo(X(A.az),Y(A.alt));ctx.lineTo(X(B.az),Y(B.alt));ctx.stroke();});
+     if(mode==="stars"&&linesOn){ // tappable constellation name at centroid
+      const pts=f.stars.map(n=>starPos[n]).filter(a=>a&&a.alt>ALT_MIN&&vis(a.az));
+      if(pts.length>=2){
+       const cx2=pts.reduce((s2,a)=>s2+X(a.az),0)/pts.length,cy2=pts.reduce((s2,a)=>s2+Y(a.alt),0)/pts.length;
+       const isSelC=selConst===cname;
+       ctx.fillStyle=isSelC?C.sel:`rgba(91,134,196,${0.9*darkness})`;
+       ctx.font=`italic ${isSelC?"bold ":""}11px Georgia,serif`;ctx.textAlign="center";
+       ctx.fillText(cname,cx2,cy2+3);ctx.textAlign="left";
+       starHits.push({x:cx2,y:cy2,name:cname,kind:"const"});
+      }
+     }
+    });
+   }
+  }
+  if(showTrail&&showPlanets&&selected&&selected!=="Moon"){
+   const pd=PLANET_DEFS.find(p=>p.name===selected);
+   if(pd)for(let k=60;k>=0;k--){const t2=timeMs-k*5*86400000,T2=daysSince(t2)/36525,e2=helioXYZ(PLANET_DEFS[2].el,T2),h2=helioXYZ(pd.el,T2);
+    const eq=raDec(eclToEq([h2[0]-e2[0],h2[1]-e2[1],h2[2]-e2[2]])),aa=altAz(eq.ra,eq.dec,timeMs,lat,lon);if(aa.alt<ALT_MIN||!vis(aa.az))continue;
+    ctx.fillStyle=C.sel;ctx.globalAlpha=0.12+0.5*(1-k/60);ctx.beginPath();ctx.arc(X(aa.az),Y(aa.alt),1.4,0,7);ctx.fill();}
+   ctx.globalAlpha=1;
+  }
+  const hits=[...starHits];
+  if(state.sun.alt>ALT_MIN&&vis(state.sun.az)){const x=X(state.sun.az),y=Y(state.sun.alt),sg=ctx.createRadialGradient(x,y,1,x,y,16);sg.addColorStop(0,"#fff7d6");sg.addColorStop(1,"#f5c45a00");ctx.fillStyle=sg;ctx.beginPath();ctx.arc(x,y,16,0,7);ctx.fill();ctx.fillStyle="#ffe9a8";ctx.beginPath();ctx.arc(x,y,7,0,7);ctx.fill();ctx.fillStyle=C.cream;ctx.font="10px Georgia,serif";ctx.fillText("Sun",x+10,y+3);}
+  if(state.moon.alt>ALT_MIN&&vis(state.moon.az)){const x=X(state.moon.az),y=Y(state.moon.alt);ctx.fillStyle="#e8e6df";ctx.beginPath();ctx.arc(x,y,6,0,7);ctx.fill();ctx.fillStyle=C.cream;ctx.font="10px Georgia,serif";ctx.fillText("Moon",x+9,y+3);hits.push({x,y,name:"Moon"});}
+  if(showPlanets)state.planets.forEach(p=>{
+   if(p.isEarth||p.alt<ALT_MIN||!vis(p.az))return;const x=X(p.az),y=Y(p.alt),washed=state.sun.alt>-2||(p.elong<12&&p.alt>0);
+   ctx.globalAlpha=washed?0.4:1;
+   if(p.name===selected){ctx.strokeStyle=C.sel;ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(x,y,8,0,7);ctx.stroke();}
+   ctx.fillStyle="#"+p.color.toString(16).padStart(6,"0");ctx.beginPath();ctx.arc(x,y,p.alt<0?2.6:3.8,0,7);ctx.fill();
+   ctx.fillStyle=p.name===selected?C.sel:C.cream;ctx.font=`${p.name===selected?"bold ":""}11px Georgia,serif`;ctx.fillText(p.name,x+7,y-5);
+   ctx.globalAlpha=1;hits.push({x,y,name:p.name});
+  });
+  // window center indicator
+  ctx.fillStyle=C.dim;ctx.font="11px ui-monospace,monospace";ctx.textAlign="center";
+  ctx.fillText(`facing ${compass16(azC)} ${Math.round(azC)}°`,w/2,14);ctx.textAlign="left";
+  hitRef.current=hits;
+ },[state,selected,timeMs,lat,lon,showTrail,mode,centerAz,selStar,selConst,linesOn]);
+ const ref=useCanvas(draw,[state,selected,timeMs,lat,lon,showTrail,mode,centerAz,selStar,selConst,linesOn]);
+ const ptDown=(e)=>{const t=e.touches?e.touches[0]:e;dragRef.current={x:t.clientX,az:centerAz,moved:0};};
+ const ptMove=(e)=>{if(!dragRef.current)return;const t=e.touches?e.touches[0]:e;const dx=t.clientX-dragRef.current.x;const w=ref.current.clientWidth;dragRef.current.moved=Math.max(dragRef.current.moved,Math.abs(dx));setCenterAz(norm360(dragRef.current.az-(dx/w)*FOV));};
+ const ptUp=(e)=>{const d=dragRef.current;dragRef.current=null;if(d&&d.moved<6){const r=ref.current.getBoundingClientRect();const cx=(e.changedTouches?e.changedTouches[0].clientX:e.clientX)-r.left,cy=(e.changedTouches?e.changedTouches[0].clientY:e.clientY)-r.top;let best=null,bd=22;hitRef.current.forEach(hp=>{const dd=Math.hypot(hp.x-cx,hp.y-cy);if(dd<bd){bd=dd;best=hp;}});if(best){if(best.kind==="star"){if(onStarTap)onStarTap(best.name);}else if(best.kind==="const"){if(onConstTap)onConstTap(best.name);}else onSelect(best.name);}}};
+ return(
+  <div>
+   <div style={{position:"relative",touchAction:"pan-y"}}
+        onMouseDown={ptDown} onMouseMove={ptMove} onMouseUp={ptUp} onMouseLeave={()=>dragRef.current=null}
+        onTouchStart={ptDown} onTouchMove={ptMove} onTouchEnd={ptUp}>
+    <canvas ref={ref} style={{width:"100%",height:240,display:"block",borderRadius:12,cursor:"grab"}}/>
+    <div style={{position:"absolute",left:8,bottom:8,fontSize:10,color:C.dim,fontStyle:"italic",pointerEvents:"none"}}>← swipe to pan →</div>
+   </div>
+   <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap",alignItems:"center"}}>
+    <button onClick={onDueSouth} style={chipBtn(false)}>↓ due south</button>
+    <button onClick={()=>setCenterAz(norm360(centerAz-30))} style={chipBtn(false)}>← 30°</button>
+    <button onClick={()=>setCenterAz(norm360(centerAz+30))} style={chipBtn(false)}>30° →</button>
+    <button onClick={onToggleCompass} style={chipBtn(compassOn)}>{compassOn?"◉ compass on":"use phone compass"}</button>
+   </div>
+  </div>
+ );
+}
+const chipBtn=(active)=>({background:active?C.brass:"#1a2440",color:active?"#1a1206":C.cream,border:`1px solid ${active?C.brass:C.line}`,borderRadius:8,padding:"6px 10px",fontSize:12,fontFamily:"Georgia,serif",cursor:"pointer"});
+
+function DepthView({conKey,morph,logScale}){
+ const draw=useCallback((ctx,w,h)=>{
+  ctx.fillStyle=C.panel2;ctx.fillRect(0,0,w,h);
+  const f=FEATURED[conKey],stars=f.stars.map(n=>starByName[n]);
+  const cRA=Math.atan2(stars.reduce((s,st)=>s+Math.sin(st.ra*D2R),0),stars.reduce((s,st)=>s+Math.cos(st.ra*D2R),0))*R2D;
+  const cDec=stars.reduce((s,st)=>s+st.dec,0)/stars.length;
+  const sky=stars.map(st=>{let dra=st.ra-cRA;if(dra>180)dra-=360;if(dra<-180)dra+=360;return{x:-dra*Math.cos(cDec*D2R),y:st.dec-cDec};});
+  const spanX=Math.max(...sky.map(p=>Math.abs(p.x)))||1,spanY=Math.max(...sky.map(p=>Math.abs(p.y)))||1;
+  const skyScale=Math.min((w*0.34)/spanX,(h*0.36)/spanY),maxD=Math.max(...stars.map(s=>s.dist)),padL=56,padR=70;
+  const distX=(d)=>logScale?padL+((Math.log10(Math.max(d,8))-Math.log10(8))/(Math.log10(maxD*1.1)-Math.log10(8)))*(w-padL-padR):padL+(d/(maxD*1.08))*(w-padL-padR);
+  const t=easeInOut(morph),pos=stars.map((st,i)=>({x:(1-t)*(w/2+sky[i].x*skyScale)+t*distX(st.dist),y:h/2-sky[i].y*skyScale,st}));
+  if(t<0.97){ctx.strokeStyle=`rgba(91,134,196,${0.55*(1-t)})`;ctx.lineWidth=1;f.lines.forEach(([a,b])=>{const A=pos[f.stars.indexOf(a)],B=pos[f.stars.indexOf(b)];ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();});}
+  if(t>0.03){const ex=18,ey=h/2;ctx.globalAlpha=t;ctx.strokeStyle="#c9a14e55";ctx.lineWidth=0.8;pos.forEach(p=>{ctx.beginPath();ctx.moveTo(ex,ey);ctx.lineTo(p.x,p.y);ctx.stroke();});ctx.fillStyle="#7ea9d8";ctx.beginPath();ctx.arc(ex,ey,5,0,7);ctx.fill();ctx.fillStyle=C.cream;ctx.font="10px Georgia,serif";ctx.fillText("Earth",6,ey+16);ctx.fillStyle="#566180";ctx.font="9px ui-monospace,monospace";const ticks=logScale?[10,30,100,300,1000,3000].filter(d=>d<maxD*1.2):[0.25,0.5,0.75,1].map(k=>Math.round((maxD*k)/50)*50);ticks.forEach(d=>{const x=distX(d);ctx.strokeStyle="#ffffff10";ctx.beginPath();ctx.moveTo(x,14);ctx.lineTo(x,h-18);ctx.stroke();ctx.fillText(`${d} ly`,x-12,h-6);});ctx.globalAlpha=1;}
+  pos.forEach(p=>{const sz=Math.max(1.6,4-p.st.mag*0.7);ctx.fillStyle=C.cream;ctx.beginPath();ctx.arc(p.x,p.y,sz,0,7);ctx.fill();ctx.fillStyle=t>0.55?C.brass:C.dim;ctx.font="10px ui-monospace,monospace";ctx.fillText(t>0.55?`${p.st.name} · ${p.st.dist} ly`:p.st.name,Math.min(p.x+6,w-92),p.y-5);});
+  ctx.fillStyle=C.dim;ctx.font="italic 11px Georgia,serif";ctx.fillText(t<0.5?"As you see it on the sky":"Same stars, by true distance →",8,16);
+ },[conKey,morph,logScale]);
+ const ref=useCanvas(draw,[conKey,morph,logScale]);
+ return <canvas ref={ref} style={{width:"100%",height:300,display:"block",borderRadius:12}}/>;
+}
+
+/* ============ PRESET PLACES + TWILIGHT ============ */
+const PRESETS=[
+ {name:"Haddonfield, NJ",lat:39.9,lon:-75.0},
+ {name:"New York",lat:40.7,lon:-74.0},
+ {name:"London",lat:51.5,lon:-0.1},
+ {name:"Reykjavík",lat:64.1,lon:-21.9},
+ {name:"Quito (equator)",lat:-0.2,lon:-78.5},
+ {name:"Sydney",lat:-33.9,lon:151.2},
+ {name:"Cape Town",lat:-33.9,lon:18.4},
+];
+// find evening astronomical twilight for a given calendar date + place.
+// Works in longitude-based local solar time so it's correct for any place on Earth,
+// independent of the browser's own timezone.
+function findDarkMoment(baseMs,latD,lonD){
+ const base=new Date(baseMs);
+ // anchor to local solar midnight of that calendar date:
+ // UTC midnight of the date, then shift by the longitude offset (lon/15 hours).
+ const utcMidnight=Date.UTC(base.getFullYear(),base.getMonth(),base.getDate(),0,0,0);
+ const lonOffsetMs=(lonD/15)*3600000; // east-positive hours from UTC
+ const localNoonUTC=utcMidnight+12*3600000-lonOffsetMs; // ~local solar noon in real UTC
+ // scan local solar 18:00 → 02:00 (i.e. +6h to +14h past local noon)
+ let best=localNoonUTC+8*3600000,bestErr=1e9,darkest=null,darkestAlt=99;
+ for(let h=6;h<=14;h+=10/60){
+  const t=localNoonUTC+h*3600000;
+  const st=skyState(t,latD,lonD);
+  if(st.sun.alt<darkestAlt){darkestAlt=st.sun.alt;darkest=t;}
+  const err=Math.abs(st.sun.alt-(-15));
+  if(st.sun.alt<-6&&err<bestErr){bestErr=err;best=t;}
+ }
+ // if true astronomical darkness is never reached (e.g. high-latitude summer),
+ // fall back to the darkest moment of the night so it's still as dark as it gets.
+ if(bestErr>30)return darkest!==null?darkest:best;
+ return best;
+}
+
+// pick the azimuth to face: the center of the densest clump of planets above the horizon.
+// returns {az, note} — az in degrees, note describing what's there.
+function bestLookAz(ms,latD,lonD){
+ const st=skyState(ms,latD,lonD);
+ const up=st.planets.filter(p=>!p.isEarth&&p.alt>3&&p.elong>8);
+ if(up.length===0){
+  // nothing notable up — face the highest point of the ecliptic (best planet-hunting band)
+  let bestAz=180,bestAlt=-99;
+  for(let L=0;L<360;L+=4){const eq=raDec(eclToEq([Math.cos(L*D2R),Math.sin(L*D2R),0])),aa=altAz(eq.ra,eq.dec,ms,latD,lonD);if(aa.alt>bestAlt){bestAlt=aa.alt;bestAz=aa.az;}}
+  return{az:bestAz,note:"No planets are up — facing the high point of the ecliptic."};
+ }
+ // circular mean of planet azimuths, weighted by altitude (higher = more weight)
+ let sx=0,sy=0;up.forEach(p=>{const w=Math.max(0.2,Math.sin(p.alt*D2R));sx+=w*Math.cos(p.az*D2R);sy+=w*Math.sin(p.az*D2R);});
+ const az=norm360(Math.atan2(sy,sx)*R2D);
+ const names=up.sort((a,b)=>b.alt-a.alt).map(p=>p.name);
+ const note=up.length===1?`${names[0]} is up`:`${up.length} planets up: ${names.slice(0,3).join(", ")}${names.length>3?"…":""}`;
+ return{az,note};
+}
+
+/* ============ CINEMATIC: FLY TO EARTH (heliocentric + cross-dissolve) ============ */
+/*
+  Heliocentric 3D scene (Sun at origin, planets at true relative distances) so the flight
+  conveys the real scale of the solar system. The descent ends CENTERED ON EARTH looking
+  OUTWARD along the ecliptic (anti-sunward = the night side), angled slightly down so the
+  model's ecliptic band sits where the 2D sky's ecliptic band sits — then cross-dissolves
+  into the labeled 120° sky window centered on lookAz.
+*/
+function FlyToEarth({lat,lon,timeMs,placeName,lookAz,lookNote,onExplore}){
+ const mountRef=useRef(null);
+ const skyRef=useRef(null);
+ const [phase,setPhase]=useState("ready"); // ready | flying | landed
+ const [caption,setCaption]=useState("");
+ const ctrl=useRef({playing:false});
+ const [scrub,setScrub]=useState(0);
+ const scrubbingRef=useRef(false);
+ const FOV_WIN=120;
+
+ const state=useMemo(()=>skyState(timeMs,lat,lon),[timeMs,lat,lon]);
+
+ // ---- 2D landing sky: 120° window centered on lookAz (matches Explore tab) ----
+ const drawSky=useCallback((alpha)=>{
+  const cv=skyRef.current;if(!cv)return;
+  const dpr=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+  if(cv.width!==w*dpr||cv.height!==h*dpr){cv.width=w*dpr;cv.height=h*dpr;}
+  const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);ctx.globalAlpha=alpha;
+  const ALT_MIN=-6,ALT_MAX=88;
+  const rel=(az)=>{let d=norm360(az)-lookAz;if(d>180)d-=360;if(d<-180)d+=360;return d;};
+  const X=(az)=>w/2+(rel(az)/FOV_WIN)*w;
+  const Y=(alt)=>h*(1-(alt-ALT_MIN)/(ALT_MAX-ALT_MIN));
+  const vis=(az)=>Math.abs(rel(az))<=FOV_WIN/2+4;
+  const grd=ctx.createLinearGradient(0,0,0,Y(0));
+  grd.addColorStop(0,"#070b18");grd.addColorStop(1,"#0d1530");
+  ctx.fillStyle=grd;ctx.fillRect(0,0,w,Y(0));
+  ctx.fillStyle="#070a10";ctx.fillRect(0,Y(0),w,h-Y(0));
+  ctx.strokeStyle="#3a4a64";ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(0,Y(0));ctx.lineTo(w,Y(0));ctx.stroke();
+  ctx.strokeStyle="#ffffff10";ctx.setLineDash([2,6]);[30,60].forEach(a=>{ctx.beginPath();ctx.moveTo(0,Y(a));ctx.lineTo(w,Y(a));ctx.stroke();ctx.fillStyle="#ffffff30";ctx.font="9px ui-monospace,monospace";ctx.fillText(a+"°",4,Y(a)-3);});ctx.setLineDash([]);
+  ctx.font="bold 12px Georgia,serif";
+  [[0,"N"],[45,"NE"],[90,"E"],[135,"SE"],[180,"S"],[225,"SW"],[270,"W"],[315,"NW"]].forEach(([az,t])=>{if(!vis(az))return;ctx.fillStyle=t.length===1?C.brass:"#9a8650";ctx.fillText(t,X(az)-(t.length*4),Y(0)+16);});
+  ctx.strokeStyle=C.brassSoft;ctx.lineWidth=1.4;ctx.setLineDash([6,5]);ctx.beginPath();let pen=false;
+  for(let L=0;L<=360;L+=2){const eq=raDec(eclToEq([Math.cos(L*D2R),Math.sin(L*D2R),0])),aa=altAz(eq.ra,eq.dec,timeMs,lat,lon);
+   if(aa.alt<ALT_MIN||!vis(aa.az)){pen=false;continue;}const x=X(aa.az),y=Y(aa.alt);if(!pen){ctx.moveTo(x,y);pen=true;}else ctx.lineTo(x,y);}
+  ctx.stroke();ctx.setLineDash([]);
+  STARS.forEach(s=>{const aa=altAz(s.ra,s.dec,timeMs,lat,lon);if(aa.alt<ALT_MIN||!vis(aa.az))return;const x=X(aa.az),y=Y(aa.alt);
+   const bright=brightestSet.has(s.name),sz=bright?2.8:Math.max(0.7,2.4-s.mag*0.5);
+   ctx.fillStyle=bright?"#fff0c0":`rgba(236,228,207,${0.8-s.mag*0.12})`;ctx.beginPath();ctx.arc(x,y,sz,0,7);ctx.fill();
+   if(bright){ctx.fillStyle=C.dim;ctx.font="9px Georgia,serif";ctx.fillText(s.name,x+4,y-3);}});
+  if(state.moon.alt>ALT_MIN&&vis(state.moon.az)){const x=X(state.moon.az),y=Y(state.moon.alt);ctx.fillStyle="#e8e6df";ctx.beginPath();ctx.arc(x,y,6,0,7);ctx.fill();ctx.fillStyle=C.cream;ctx.font="10px Georgia,serif";ctx.fillText("Moon",x+8,y+3);}
+  state.planets.forEach(p=>{if(p.isEarth||p.alt<ALT_MIN||p.elong<8||!vis(p.az))return;const x=X(p.az),y=Y(p.alt);
+   ctx.fillStyle="#"+p.color.toString(16).padStart(6,"0");ctx.beginPath();ctx.arc(x,y,4.5,0,7);ctx.fill();
+   ctx.strokeStyle="#"+p.color.toString(16).padStart(6,"0")+"66";ctx.lineWidth=1;ctx.beginPath();ctx.arc(x,y,8,0,7);ctx.stroke();
+   ctx.fillStyle=C.sel;ctx.font="bold 12px Georgia,serif";ctx.fillText(p.name,x+9,y-5);
+   ctx.fillStyle=C.dim;ctx.font="9px ui-monospace,monospace";ctx.fillText(eclConstellation(p.eclLon),x+9,y+8);});
+  ctx.fillStyle=C.dim;ctx.font="11px ui-monospace,monospace";ctx.textAlign="center";ctx.fillText(`facing ${compass16(lookAz)} ${Math.round(lookAz)}°`,w/2,14);ctx.textAlign="left";
+  ctx.globalAlpha=1;
+ },[state,timeMs,lat,lon,lookAz]);
+
+ useEffect(()=>{
+  const mount=mountRef.current,W=mount.clientWidth,H=400;
+  const onProgress=(p)=>{if(!scrubbingRef.current)setScrub(Math.min(1,Math.max(0,p)));};
+  const scene=new THREE.Scene();scene.background=new THREE.Color(0x05060f);
+  const camera=new THREE.PerspectiveCamera(55,W/H,0.01,4000);
+  const renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(W,H);renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  mount.appendChild(renderer.domElement);
+
+  const SCALE=9;
+  const projP=(p)=>{const r=Math.hypot(p[0],p[1],p[2])||1e-6,rs=Math.sqrt(r/9.6)*SCALE,k=rs/r;return new THREE.Vector3(p[0]*k,p[2]*k,-p[1]*k);};
+
+  // starfield
+  const sGeo=new THREE.BufferGeometry(),sC=1600,sP=new Float32Array(sC*3);
+  for(let i=0;i<sC;i++){const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1),R=900;sP[i*3]=R*Math.sin(ph)*Math.cos(th);sP[i*3+1]=R*Math.cos(ph);sP[i*3+2]=R*Math.sin(ph)*Math.sin(th);}
+  sGeo.setAttribute("position",new THREE.BufferAttribute(sP,3));
+  scene.add(new THREE.Points(sGeo,new THREE.PointsMaterial({size:1.6,color:0xdde6ff,sizeAttenuation:false})));
+
+  // sun + glow
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(1.5,32,32),new THREE.MeshBasicMaterial({color:0xffd98a})));
+  const gc=document.createElement("canvas");gc.width=gc.height=128;const gx=gc.getContext("2d");const gg=gx.createRadialGradient(64,64,0,64,64,64);gg.addColorStop(0,"rgba(255,228,150,0.95)");gg.addColorStop(0.3,"rgba(245,180,80,0.5)");gg.addColorStop(1,"rgba(245,180,80,0)");gx.fillStyle=gg;gx.fillRect(0,0,128,128);
+  const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(gc),transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));glow.scale.set(9,9,1);scene.add(glow);
+  scene.add(new THREE.PointLight(0xfff0d0,2.4,0,1.2));scene.add(new THREE.AmbientLight(0x4a557a,1.0));
+  const grid=new THREE.PolarGridHelper(SCALE*3.2,16,6,64,0x2a3a66,0x1c2848);grid.material.transparent=true;grid.material.opacity=0.45;scene.add(grid);
+
+  const T=skyState(timeMs,lat,lon).T;
+  const meshes=[],labels=[],orbitLines=[],basePos=[],dirComp=[],dirTrue=[],distE=[];
+  let earthPos=new THREE.Vector3();
+  const helioRaw=PLANET_DEFS.map(p=>helioXYZ(p.el,T)); // uncompressed heliocentric positions
+  const sceneOfRaw=(v)=>new THREE.Vector3(v[0],v[2],-v[1]); // pure frame swap, no radial compression
+  const mkLabel=(text,big)=>{const cv=document.createElement("canvas");cv.width=256;cv.height=64;const cx=cv.getContext("2d");cx.font=`${big?"bold ":""}26px Georgia,serif`;cx.fillStyle=big?"#ffd97a":"#ece4cf";cx.textAlign="center";cx.fillText(text,128,40);const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),transparent:true,depthWrite:false}));spr.scale.set(big?6:5,big?1.5:1.25,1);return spr;};
+  PLANET_DEFS.forEach((p,i)=>{
+   const pts=[];for(let k=0;k<=240;k++)pts.push(projP(helioXYZ(p.el,T,(k/240)*2*Math.PI)));
+   const ol=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:p.color,transparent:true,opacity:0.4}));
+   scene.add(ol);orbitLines.push(ol);
+   const spv=projP(helioXYZ(p.el,T));
+   const baseSize=Math.max(0.3,p.size*0.45);
+   const mesh=new THREE.Mesh(new THREE.SphereGeometry(baseSize,24,24),new THREE.MeshStandardMaterial({color:p.color,roughness:0.85,emissive:new THREE.Color(p.color).multiplyScalar(0.15)}));
+   mesh.userData.baseSize=baseSize;mesh.position.copy(spv);scene.add(mesh);meshes.push(mesh);
+   if(p.ring){const ring=new THREE.Mesh(new THREE.RingGeometry(0.8,1.3,40),new THREE.MeshBasicMaterial({color:0xcdbf8e,side:THREE.DoubleSide,transparent:true,opacity:0.55}));ring.rotation.x=Math.PI/2-0.45;mesh.add(ring);}
+   const l=mkLabel(p.name,i===2);l.position.set(spv.x,spv.y+1.3,spv.z);scene.add(l);labels.push(l);
+   basePos.push(spv.clone());
+   if(i===2)earthPos=spv.clone();
+  });
+  // per-planet: compressed-scene direction from Earth vs TRUE geocentric direction (for the settle-into-place morph)
+  PLANET_DEFS.forEach((p,i)=>{
+   if(i===2){dirComp.push(null);dirTrue.push(null);distE.push(0);return;}
+   const rel=basePos[i].clone().sub(earthPos);distE.push(rel.length());dirComp.push(rel.normalize());
+   const g=[helioRaw[i][0]-helioRaw[2][0],helioRaw[i][1]-helioRaw[2][1],helioRaw[i][2]-helioRaw[2][2]];
+   dirTrue.push(sceneOfRaw(g).normalize());
+  });
+
+  // ---- choreography ----
+  const TILT=24*D2R, holdRot=4.5, flyDur=6.5;
+  const startR=19, camFOVstart=55, camFOVend=78.7; // end FOV matches the 2D window's vertical scale: 2·atan(47·π/180)
+  const setCam=(theta,phi,radius,target)=>{camera.position.set(target.x+radius*Math.sin(phi)*Math.cos(theta),target.y+radius*Math.cos(phi),target.z+radius*Math.sin(phi)*Math.sin(theta));camera.lookAt(target);};
+  const eo=Math.PI/2-TILT, establishTheta=0.6+Math.PI*1.3;
+  const startOffsetWorld=new THREE.Vector3(Math.sin(eo)*Math.cos(establishTheta),Math.cos(eo),Math.sin(eo)*Math.sin(establishTheta)).multiplyScalar(startR);
+
+  // ---- TRUE gaze direction: the sky direction of (lookAz, GAZE_ALT) converted into the model's frame ----
+  // (az,alt) → RA/Dec → ecliptic → scene. This is the actual patch of sky the 2D window is centered on,
+  // so the planets (which sit in their geocentric directions from Earth) land where the sky shows them.
+  const GAZE_ALT=37; // tuned via headless render tests: balances the 2D window's linear-alt mapping vs perspective tan
+  const skyToEq=(azD,altD)=>{
+   const d=daysSince(timeMs),LST=norm360(280.46061837+360.98564736629*d+lon);
+   const A=azD*D2R,hh=altD*D2R,ph=lat*D2R;
+   const sinDec=Math.sin(ph)*Math.sin(hh)+Math.cos(ph)*Math.cos(hh)*Math.cos(A);
+   const dec=Math.asin(Math.max(-1,Math.min(1,sinDec)));
+   const sinH=-Math.sin(A)*Math.cos(hh)/Math.cos(dec);
+   const cosH=(Math.sin(hh)-Math.sin(ph)*sinDec)/(Math.cos(ph)*Math.cos(dec));
+   const H=Math.atan2(sinH,cosH)*R2D;
+   return{ra:norm360(LST-H),dec:dec*R2D};
+  };
+  const eqToSceneDir=(raD,decD)=>{
+   const ra=raD*D2R,dec=decD*D2R;
+   const x=Math.cos(dec)*Math.cos(ra),y=Math.cos(dec)*Math.sin(ra),z=Math.sin(dec);
+   // equatorial → ecliptic (rotate −obliquity about x), then frame swap to scene (x, z_ecl, −y_ecl)
+   const ye=y*Math.cos(OBL)+z*Math.sin(OBL), ze=-y*Math.sin(OBL)+z*Math.cos(OBL);
+   return new THREE.Vector3(x,ze,-ye).normalize();
+  };
+  const gz=skyToEq(lookAz,GAZE_ALT);
+  const gazeDir=eqToSceneDir(gz.ra,gz.dec);                 // where the camera looks at the end
+  const zen=skyToEq(0,90);                                   // local zenith
+  const zenithScene=eqToSceneDir(zen.ra,zen.dec);            // camera "up" at the end → horizon is level & matches 2D roll
+  const gazeHoriz=gazeDir.clone();gazeHoriz.y=0;gazeHoriz.normalize();
+
+  let raf,t0=null,mode="idle",idleTheta=0.7;
+  setCam(idleTheta,Math.PI/2-TILT,startR,new THREE.Vector3(0,0,0));
+
+  const frame=(p)=>{ // p in [0,1] across the whole timeline
+   const total=holdRot+flyDur, el=p*total;
+   if(el<holdRot){ // establishing orbit
+    const k=el/holdRot, theta=0.6+k*Math.PI*1.3;
+    camera.fov=camFOVstart;camera.updateProjectionMatrix();
+    meshes.forEach((m,i)=>{m.scale.setScalar(1);m.position.copy(basePos[i]);m.visible=true;});
+    orbitLines.forEach(ol=>ol.material.opacity=0.4);
+    camera.up.set(0,1,0);
+    setCaption("The whole solar system — planets at their true relative distances on the ecliptic.");
+    setCam(theta,Math.PI/2-TILT,startR,new THREE.Vector3(0,0,0));
+    grid.material.opacity=0.45;labels.forEach((l,i)=>{l.material.opacity=i===2?1:0.62;l.position.set(basePos[i].x,basePos[i].y+1.3,basePos[i].z);});
+    if(skyRef.current)skyRef.current.style.opacity=0;renderer.domElement.style.opacity=1;
+   }else{ // descent → arrive AT Earth looking toward the true sky direction of lookAz
+    const raw=Math.min(1,(el-holdRot)/flyDur), k=1-Math.pow(1-raw,3); // ease-out
+    const earth=earthPos.clone();
+    // PATH: from the establishing vantage, curve behind Earth on the −gaze side, end essentially AT Earth.
+    const startPos=startOffsetWorld.clone();
+    const waypoint=earth.clone().add(gazeHoriz.clone().multiplyScalar(-5)).add(new THREE.Vector3(0,3.5,0));
+    const endPos=earth.clone().add(gazeDir.clone().multiplyScalar(-0.08)); // a hair behind Earth along the gaze line
+    const a=new THREE.Vector3().lerpVectors(startPos,waypoint,k);
+    const b=new THREE.Vector3().lerpVectors(waypoint,endPos,k);
+    camera.position.copy(new THREE.Vector3().lerpVectors(a,b,k));
+    // UP: ease from ecliptic-north to the local zenith so the horizon levels out to match the 2D window's roll
+    camera.up.copy(new THREE.Vector3(0,1,0).lerp(zenithScene,easeInOut(Math.min(1,raw*1.2))).normalize());
+    // LOOK: ease from the system centre to a far point along the TRUE gaze direction
+    const skyLook=earth.clone().add(gazeDir.clone().multiplyScalar(60));
+    const lookPt=new THREE.Vector3().lerpVectors(new THREE.Vector3(0,0,0),skyLook,easeInOut(Math.min(1,raw*1.15)));
+    camera.lookAt(lookPt);
+    camera.fov=camFOVstart+(camFOVend-camFOVstart)*k;camera.updateProjectionMatrix();
+    // PLANETS: shrink, and settle from compressed-model directions onto TRUE geocentric directions,
+    // so by the cut each planet sits exactly where the real sky puts it.
+    const shrink=1-0.82*k, settle=easeInOut(k);
+    meshes.forEach((m,i)=>{
+     m.scale.setScalar(shrink);
+     if(i===2){m.position.copy(basePos[i]);m.visible=raw<0.85;return;} // Earth: hide as we land on it
+     const dir=new THREE.Vector3().lerpVectors(dirComp[i],dirTrue[i],settle).normalize();
+     m.position.copy(earth.clone().add(dir.multiplyScalar(distE[i])));
+    });
+    orbitLines.forEach(ol=>ol.material.opacity=0.4*(1-k*0.85)); // orbits fade — they'd look wrong from inside
+    labels.forEach((l,i)=>{const m=meshes[i];l.position.set(m.position.x,m.position.y+1.3*m.scale.x,m.position.z);l.material.opacity=i===2?Math.max(0,1-raw*2):Math.max(0,1-k*1.3);});
+    grid.material.opacity=0.45*(1-k*0.6);
+    if(raw<0.4)setCaption(`Falling toward Earth — ${placeName}.`);
+    else if(raw<0.8)setCaption(lookNote?`Turning to ${compass16(lookAz)} — ${lookNote}.`:`Turning to ${compass16(lookAz)}.`);
+    else setCaption("Crossing into the night sky…");
+    const fadeStart=0.78;
+    const fa=raw>fadeStart?Math.min(1,(raw-fadeStart)/(1-fadeStart)):0;
+    if(skyRef.current){skyRef.current.style.opacity=fa;if(fa>0)drawSky(1);}
+    renderer.domElement.style.opacity=1-fa*0.92;
+    if(p>=1){if(skyRef.current)skyRef.current.style.opacity=1;drawSky(1);renderer.domElement.style.opacity=0.08;}
+   }
+  };
+
+  const render=(now)=>{
+   if(mode==="fly"){
+    if(t0===null)t0=now;
+    const total=holdRot+flyDur,el=(now-t0)/1000,p=el/total;
+    if(p>=1){frame(1);mode="done";ctrl.current.playing=false;setPhase("landed");setCaption("");onProgress(1);renderer.render(scene,camera);raf=requestAnimationFrame(render);return;}
+    frame(p);onProgress(p);
+   }else if(mode==="idle"){
+    idleTheta+=0.0014;camera.fov=camFOVstart;camera.updateProjectionMatrix();
+    meshes.forEach(m=>m.scale.setScalar(1));labels.forEach((l,i)=>l.material.opacity=i===2?1:0.62);
+    setCam(idleTheta,Math.PI/2-TILT,startR,new THREE.Vector3(0,0,0));
+   }else if(mode==="scrub"||mode==="done"){
+    renderer.render(scene,camera);raf=requestAnimationFrame(render);return;
+   }
+   renderer.render(scene,camera);raf=requestAnimationFrame(render);
+  };
+  mode="idle";raf=requestAnimationFrame(render);
+
+  mount._startFly=()=>{t0=null;mode="fly";ctrl.current.playing=true;setPhase("flying");grid.material.opacity=0.45;meshes.forEach(m=>m.scale.setScalar(1));labels.forEach((l,i)=>l.material.opacity=i===2?1:0.62);if(skyRef.current)skyRef.current.style.opacity=0;renderer.domElement.style.opacity=1;};
+  mount._scrubTo=(p)=>{mode="scrub";ctrl.current.playing=false;setPhase(p>=1?"landed":"flying");frame(p);renderer.render(scene,camera);if(p>=1)mode="done";};
+
+  const ro=new ResizeObserver(()=>{const w=mount.clientWidth;renderer.setSize(w,H);camera.aspect=w/H;camera.updateProjectionMatrix();});ro.observe(mount);
+  return()=>{cancelAnimationFrame(raf);ro.disconnect();renderer.dispose();if(renderer.domElement.parentNode)mount.removeChild(renderer.domElement);};
+ },[lat,lon,timeMs,placeName,lookAz,lookNote,drawSky]);
+
+ const start=()=>{const m=mountRef.current;if(m&&m._startFly){setScrub(0);m._startFly();}};
+ const onScrubInput=(v)=>{scrubbingRef.current=true;ctrl.current.playing=false;setScrub(v);const m=mountRef.current;if(m&&m._scrubTo)m._scrubTo(v);};
+ const onScrubRelease=()=>{scrubbingRef.current=false;};
+
+ return(
+  <div>
+   <div style={{position:"relative",borderRadius:14,overflow:"hidden",border:`1px solid ${C.line}`}}>
+    <div ref={mountRef} style={{width:"100%",height:400}}/>
+    <canvas ref={skyRef} style={{position:"absolute",inset:0,width:"100%",height:400,opacity:0,transition:"none",pointerEvents:"none"}}/>
+    {caption&&<div style={{position:"absolute",left:0,right:0,bottom:14,textAlign:"center",color:C.cream,fontStyle:"italic",fontSize:14,textShadow:"0 2px 12px #000",pointerEvents:"none"}}>{caption}</div>}
+    {phase==="ready"&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none"}}>
+     <div style={{background:"#0a1020aa",border:`1px solid ${C.brass}`,borderRadius:12,padding:"10px 16px",color:C.cream,fontSize:14,backdropFilter:"blur(3px)"}}>▶ press “Fly” to begin the descent</div>
+    </div>}
+    {phase==="landed"&&<div style={{position:"absolute",top:8,left:0,right:0,textAlign:"center",color:C.sel,fontSize:13,fontFamily:"ui-monospace,monospace",textShadow:"0 1px 6px #000",pointerEvents:"none"}}>{placeName} · {fmtET(timeMs)} · facing {compass16(lookAz)}</div>}
+   </div>
+   <div style={{display:"flex",gap:8,alignItems:"center",marginTop:10}}>
+    <span style={{fontSize:11,color:C.dim,width:42}}>start</span>
+    <input type="range" min={0} max={1} step={0.001} value={scrub} onChange={e=>onScrubInput(+e.target.value)} onMouseUp={onScrubRelease} onTouchEnd={onScrubRelease} style={{flex:1,accentColor:C.brass}}/>
+    <span style={{fontSize:11,color:C.dim,width:42,textAlign:"right"}}>sky</span>
+   </div>
+   <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap",justifyContent:"center"}}>
+    <button onClick={start} style={{background:C.brass,color:"#1a1206",border:"none",borderRadius:9,padding:"9px 18px",fontSize:14,fontFamily:"Georgia,serif",cursor:"pointer"}}>{phase==="landed"?"↺ Replay":"▶ Fly to Earth"}</button>
+    {phase==="landed"&&<button onClick={onExplore} style={{background:"#1a2440",color:C.cream,border:`1px solid ${C.line}`,borderRadius:9,padding:"9px 18px",fontSize:14,fontFamily:"Georgia,serif",cursor:"pointer"}}>go explore this sky →</button>}
+   </div>
+  </div>
+ );
+}
+
+
+function App(){
+ const[timeMs,setTimeMs]=useState(()=>Date.now());
+ const[playing,setPlaying]=useState(false);
+ const[speed,setSpeed]=useState(86400000);
+ const[selected,setSelected]=useState("Jupiter");
+ const[lat,setLat]=useState(40);
+ const[showTrail,setShowTrail]=useState(true);
+ const[showOrbits,setShowOrbits]=useState(true);
+ const[showEcliptic,setShowEcliptic]=useState(true);
+ const[tab,setTab]=useState("explore");
+ const[conKey,setConKey]=useState("Orion");
+ const[morph,setMorph]=useState(0);
+ const[morphPlay,setMorphPlay]=useState(false);
+ const[logScale,setLogScale]=useState(false);
+ const[skyMode,setSkyMode]=useState("planets");
+ const[view,setView]=useState("both"); // explore layout: orbits | sky | both
+ const[centerAz,setCenterAz]=useState(180);
+ const[compassOn,setCompassOn]=useState(false);
+ const[dayStep,setDayStep]=useState(false); // animate one day per frame, same clock time
+ const[selStar,setSelStar]=useState(null); // tapped bright star → fact card
+ const[selConst,setSelConst]=useState(null); // tapped constellation name → story card
+ const[linesOn,setLinesOn]=useState(true); // constellation lines in star view
+ const[flyPlace,setFlyPlace]=useState(PRESETS[0]);
+ const[flyDate,setFlyDate]=useState(()=>Date.now());
+ const[flyTimeMode,setFlyTimeMode]=useState("auto"); // auto | custom | now
+ const[flyHour,setFlyHour]=useState(22); // local solar hour when custom
+ const[flyDirMode,setFlyDirMode]=useState("auto"); // auto | custom
+ const[flyAz,setFlyAz]=useState(180); // when custom
+ const lon=-75;
+ const timeRef=useRef(timeMs);timeRef.current=timeMs;
+ const latRef=useRef(lat);latRef.current=lat;
+ const selectedRef=useRef(selected);selectedRef.current=selected;
+ const focusEarth=useRef(false);
+ const orbitsRef=useRef(showOrbits);orbitsRef.current=showOrbits;
+ const eclRef=useRef(showEcliptic);eclRef.current=showEcliptic;
+
+ useEffect(()=>{if(!playing)return;let raf,last=performance.now(),acc=0;const step=(now)=>{const dt=(now-last)/1000;last=now;
+   if(dayStep){acc+=dt;if(acc>=0.12){acc=0;setTimeMs(t=>{const d=new Date(t);d.setDate(d.getDate()+1);return d.getTime();});}}
+   else{setTimeMs(t=>t+dt*speed);}
+   raf=requestAnimationFrame(step);};raf=requestAnimationFrame(step);return()=>cancelAnimationFrame(raf);},[playing,speed,dayStep]);
+ useEffect(()=>{if(!morphPlay)return;let raf,last=performance.now(),dir=morph>=0.99?-1:1;const step=(now)=>{const dt=(now-last)/1000;last=now;setMorph(m=>{let nm=m+dir*dt*0.35;if(nm>=1){nm=1;dir=-1;}if(nm<=0){nm=0;dir=1;}return nm;});raf=requestAnimationFrame(step);};raf=requestAnimationFrame(step);return()=>cancelAnimationFrame(raf);},[morphPlay]);
+
+ // device compass
+ const compassGotEvent=useRef(false);
+ useEffect(()=>{
+  if(!compassOn)return;
+  compassGotEvent.current=false;
+  const handler=(e)=>{let heading=null;if(e.webkitCompassHeading!=null)heading=e.webkitCompassHeading;else if(e.alpha!=null)heading=360-e.alpha;if(heading!=null){compassGotEvent.current=true;setCenterAz(norm360(heading));}};
+  window.addEventListener("deviceorientationabsolute",handler,true);
+  window.addEventListener("deviceorientation",handler,true);
+  // if no reading arrives within 1.5s, the sensor isn't delivering data
+  const chk=setTimeout(()=>{if(!compassGotEvent.current){setCompassOn(false);alert("No compass data is arriving. On iPhone this usually means the page isn't on https:// — opening the file directly (file://) blocks the sensor. Host it on a secure URL, or just use swipe / due-south.");}},1500);
+  return()=>{clearTimeout(chk);window.removeEventListener("deviceorientationabsolute",handler,true);window.removeEventListener("deviceorientation",handler,true);};
+ },[compassOn]);
+ const toggleCompass=async()=>{
+  if(compassOn){setCompassOn(false);return;}
+  if(window.location.protocol==="file:"){alert("The compass can't run from a file opened directly (file://) — iOS only delivers motion-sensor data to pages served over https://. To enable it: host this file on any free https site (e.g. Netlify Drop or GitHub Pages) and open that link in Safari. Swipe and the due-south button always work.");return;}
+  if(!window.isSecureContext){alert("The phone compass needs a secure (https://) page. Host the file on any https link to enable it — swipe and due-south always work.");return;}
+  try{
+   if(typeof DeviceOrientationEvent!=="undefined"&&DeviceOrientationEvent.requestPermission){
+    const res=await DeviceOrientationEvent.requestPermission();
+    if(res==="granted")setCompassOn(true);else alert("Compass permission denied. Use swipe or the due-south button instead.");
+   }else setCompassOn(true);
+  }catch(err){alert(`Couldn't start the compass (${err&&err.name?err.name:"unknown error"}). This usually means the page isn't served over https://, or the browser is an in-app viewer without sensor access. Open the file from an https link in Safari or Chrome — swipe and due-south always work.`);}
+ };
+
+ const getState=useCallback(()=>skyState(timeRef.current,latRef.current,lon),[]);
+ const state=useMemo(()=>skyState(timeMs,lat,lon),[timeMs,lat]);
+ const bodies=useMemo(()=>{
+  const rows=state.planets.filter(p=>!p.isEarth).map(p=>{
+   let status,sc;
+   if(p.elong<11){status="lost in Sun's glare";sc="#a0743a";}
+   else if(p.alt<0){status="below horizon";sc="#566180";}
+   else if(state.sun.alt>-4){status=`up (daylight) · ${compass16(p.az)} ${p.alt.toFixed(0)}°`;sc="#8ba0c4";}
+   else{status=`visible · ${compass16(p.az)} ${p.alt.toFixed(0)}° up`;sc="#7fc48a";}
+   return{name:p.name,color:"#"+p.color.toString(16).padStart(6,"0"),status,sc,extra:`${p.dist.toFixed(2)} AU · ${eclConstellation(p.eclLon)}`};
+  });
+  const m=state.moon;rows.push({name:"Moon",color:"#e8e6df",status:m.alt>0?`${compass16(m.az)} ${m.alt.toFixed(0)}° up`:"below horizon",sc:m.alt>0?"#7fc48a":"#566180",extra:`${(m.illum*100).toFixed(0)}% lit`});
+  return rows;
+ },[state]);
+ const jump=(ms)=>{setPlaying(false);setTimeMs(ms);};
+ const btn=(active)=>({background:active?C.brass:"#1a2440",color:active?"#1a1206":C.cream,border:`1px solid ${active?C.brass:C.line}`,borderRadius:8,padding:"7px 11px",fontSize:13,fontFamily:"Georgia,serif",cursor:"pointer"});
+ const chip=(active)=>({...btn(active),padding:"5px 9px",fontSize:12});
+ const ld=new Date(timeMs);
+ const dateVal=`${ld.getFullYear()}-${String(ld.getMonth()+1).padStart(2,"0")}-${String(ld.getDate()).padStart(2,"0")}`;
+ const hourVal=ld.getHours()+ld.getMinutes()/60;
+
+ // shared time stepper row used in two places
+ const TimeStepper=()=>(
+  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+   <button style={btn(false)} onClick={()=>jump(addMonths(timeMs,-1))}>− 1 mo</button>
+   <button style={btn(false)} onClick={()=>jump(timeMs-86400000)}>−1d</button>
+   <button style={btn(playing)} onClick={()=>setPlaying(p=>!p)}>{playing?"❚❚":"▶"}</button>
+   <button style={btn(false)} onClick={()=>jump(timeMs+86400000)}>+1d</button>
+   <button style={btn(false)} onClick={()=>jump(addMonths(timeMs,1))}>+ 1 mo</button>
+  </div>
+ );
+
+ // engraved instrument-plate section label
+ const Plate=({children,right})=>(
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:10,paddingBottom:7,borderBottom:`1px solid ${C.line}`}}>
+   <span style={{fontSize:10.5,letterSpacing:2.5,color:C.brass,fontFamily:"ui-monospace,monospace"}}>{children}</span>
+   {right&&<span style={{fontSize:11,color:C.dim,fontStyle:"italic"}}>{right}</span>}
+  </div>
+ );
+ const panel={background:C.panel,border:`1px solid ${C.line}`,borderRadius:14,padding:12,marginBottom:12};
+ const segBtn=(active)=>({flex:1,background:active?C.brass:"transparent",color:active?"#1a1206":C.cream,border:"none",borderRadius:999,padding:"8px 6px",fontSize:13,fontFamily:"Georgia,serif",cursor:"pointer",whiteSpace:"nowrap"});
+
+ const starFact=selStar?STAR_FACTS[selStar]:null;
+ const starCat=selStar?starByName_safe(selStar):null;
+ function starByName_safe(n){return STARS.find(s=>s.name===n)||null;}
+
+ return(
+  <div style={{minHeight:"100vh",background:"radial-gradient(ellipse at 50% 0%, #0d1430 0%, #05060f 60%)",color:C.cream,fontFamily:"Georgia,'Iowan Old Style',serif",padding:"14px 12px 40px"}}>
+   <div style={{maxWidth:780,margin:"0 auto"}}>
+    <div style={{textAlign:"center",marginBottom:12}}>
+     <div style={{fontSize:27,letterSpacing:1,textShadow:"0 0 24px #c9a14e44"}}>O R R E R Y <span style={{color:C.brass}}>·</span> 3D</div>
+     <div style={{width:120,height:1,background:`linear-gradient(90deg,transparent,${C.brass},transparent)`,margin:"7px auto 6px"}}/>
+     <div style={{fontSize:12.5,color:C.dim,fontStyle:"italic"}}>fly the solar system · then face your real horizon — one synchronized clock</div>
+    </div>
+    {/* segmented tab selector */}
+    <div style={{display:"flex",gap:2,marginBottom:14,background:"#0d1426",border:`1px solid ${C.line}`,borderRadius:999,padding:3,maxWidth:520,margin:"0 auto 14px"}}>
+     <button style={segBtn(tab==="explore")} onClick={()=>setTab("explore")}>Explore in 3D</button>
+     <button style={segBtn(tab==="fly")} onClick={()=>setTab("fly")}>Fly to Earth</button>
+     <button style={segBtn(tab==="depth")} onClick={()=>setTab("depth")}>Star distances</button>
+    </div>
+
+    {tab==="explore"&&<>
+     {/* sticky time ribbon — date/time + transport, always visible while scrolling */}
+     <div style={{position:"sticky",top:6,zIndex:50,display:"flex",alignItems:"center",gap:8,background:"#0c1226ee",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)",border:`1px solid ${C.line}`,borderRadius:999,padding:"6px 12px",marginBottom:10,boxShadow:"0 4px 18px #00000066"}}>
+      <span style={{fontFamily:"ui-monospace,monospace",fontSize:13,color:C.sel,flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fmtET(timeMs)}</span>
+      <button style={{...btn(false),padding:"4px 10px",fontSize:12,borderRadius:999}} onClick={()=>jump(timeMs-86400000)}>−1d</button>
+      <button style={{...btn(playing),padding:"4px 12px",fontSize:12,borderRadius:999}} onClick={()=>setPlaying(p=>!p)}>{playing?"❚❚":"▶"}</button>
+      <button style={{...btn(false),padding:"4px 10px",fontSize:12,borderRadius:999}} onClick={()=>jump(timeMs+86400000)}>+1d</button>
+     </div>
+     {/* view switcher: alternate the two instruments or keep the split */}
+     <div style={{display:"flex",gap:2,marginBottom:12,background:"#0d1426",border:`1px solid ${C.line}`,borderRadius:999,padding:3,maxWidth:340,margin:"0 auto 12px"}}>
+      <button style={segBtn(view==="orbits")} onClick={()=>setView("orbits")}>Orbits</button>
+      <button style={segBtn(view==="sky")} onClick={()=>setView("sky")}>Sky</button>
+      <button style={segBtn(view==="both")} onClick={()=>setView("both")}>Both</button>
+     </div>
+     {/* TIME first — it drives every panel below */}
+     <div style={panel}>
+      <Plate right={`${lat.toFixed(0)}°N, 75°W`}>TIME</Plate>
+      <div style={{fontFamily:"ui-monospace,monospace",fontSize:16,color:C.sel,marginBottom:10}}>{fmtET(timeMs)}</div>
+      {TimeStepper()}
+      <div style={{display:"flex",gap:6,marginTop:8,flexWrap:"wrap"}}>
+       <select value={speed} disabled={dayStep} onChange={e=>setSpeed(+e.target.value)} style={{...btn(false),appearance:"auto",opacity:dayStep?0.4:1}}>
+        <option value={600000}>10 min / sec</option><option value={3600000}>1 hour / sec</option>
+        <option value={86400000}>1 day / sec</option><option value={2592000000}>1 month / sec</option>
+       </select>
+       <button style={btn(dayStep)} onClick={()=>setDayStep(!dayStep)}>📅 step 1 day/frame</button>
+       <button style={btn(false)} onClick={()=>jump(Date.now())}>Now</button>
+       <button style={btn(false)} onClick={()=>jump(Date.UTC(2026,0,10,5,0))}>Jupiter opp.</button>
+      </div>
+      {dayStep&&<div style={{fontSize:11,color:C.dim,marginTop:6,fontStyle:"italic"}}>Day-step mode: Play jumps exactly one day each frame, holding the same clock time — watch the planets shift against the stars night to night while the sky stays put.</div>}
+      <div style={{display:"flex",gap:10,alignItems:"center",marginTop:10}}>
+       <span style={{fontSize:11,color:C.dim,width:78}}>time of day</span>
+       <input type="range" min={0} max={23.99} step={0.25} value={hourVal} style={{flex:1}} onChange={e=>{const d=new Date(timeMs),v=+e.target.value;d.setHours(Math.floor(v),Math.round((v%1)*60),0,0);jump(d.getTime());}}/>
+      </div>
+      <div style={{display:"flex",gap:10,alignItems:"center",marginTop:6}}>
+       <input type="date" value={dateVal} style={{...btn(false),padding:"4px 8px"}} onChange={e=>{if(!e.target.value)return;const[y,m,dd]=e.target.value.split("-").map(Number);const d=new Date(timeMs);d.setFullYear(y,m-1,dd);jump(d.getTime());}}/>
+       <span style={{fontSize:11,color:C.dim}}>lat {lat}°</span>
+       <input type="range" min={-55} max={60} step={1} value={lat} onChange={e=>setLat(+e.target.value)} style={{flex:1}}/>
+      </div>
+     </div>
+
+     {view!=="sky"&&<div style={{...panel,padding:8}}>
+      <div style={{padding:"0 4px"}}><Plate right="drag · zoom · tap a planet">THE ORBITS</Plate></div>
+      <Scene3D getState={getState} selectedRef={selectedRef} onSelect={setSelected} showOrbits={orbitsRef} showEcliptic={eclRef} focusEarth={focusEarth}/>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8,alignItems:"center",padding:"0 4px"}}>
+       <button style={chip(showOrbits)} onClick={()=>setShowOrbits(!showOrbits)}>orbit paths</button>
+       <button style={chip(showEcliptic)} onClick={()=>setShowEcliptic(!showEcliptic)}>ecliptic plane</button>
+       <label style={{...chip(false),display:"flex",gap:5,alignItems:"center"}}><input type="checkbox" onChange={e=>{focusEarth.current=e.target.checked;}} style={{accentColor:C.brass}}/> follow Earth</label>
+      </div>
+     </div>}
+
+     {view!=="orbits"&&<div style={{...panel,padding:10}}>
+      <div style={{padding:"0 2px"}}>
+       <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:10,paddingBottom:7,borderBottom:`1px solid ${C.line}`,flexWrap:"wrap",gap:6}}>
+        <span style={{fontSize:10.5,letterSpacing:2.5,color:C.brass,fontFamily:"ui-monospace,monospace"}}>YOUR SKY · {FOV}° WINDOW</span>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+         <button style={chip(skyMode==="planets")} onClick={()=>{setSkyMode("planets");setSelStar(null);setSelConst(null);}}>planets + ecliptic</button>
+         <button style={chip(skyMode==="stars")} onClick={()=>setSkyMode("stars")}>stars</button>
+         {skyMode==="stars"&&<button style={chip(linesOn)} onClick={()=>{setLinesOn(v=>!v);if(linesOn)setSelConst(null);}}>constellations</button>}
+        </div>
+       </div>
+      </div>
+      <SkyView state={state} selected={selected} onSelect={setSelected} timeMs={timeMs} lat={lat} lon={lon} showTrail={showTrail} mode={skyMode} centerAz={centerAz} setCenterAz={setCenterAz} compassOn={compassOn} onToggleCompass={toggleCompass} onDueSouth={()=>{setCompassOn(false);setCenterAz(180);}} onStarTap={(n)=>{setSelConst(null);setSelStar(cur=>cur===n?null:n);}} selStar={selStar} onConstTap={(n)=>{setSelStar(null);setSelConst(cur=>cur===n?null:n);}} selConst={selConst} linesOn={linesOn}/>
+      {/* star fact card */}
+      {skyMode==="stars"&&selStar&&(()=>{
+       const f=starFact,cat=starCat;
+       return(
+        <div style={{marginTop:10,background:C.panel2,border:`1px solid ${C.brass}55`,borderRadius:12,padding:"12px 14px",position:"relative"}}>
+         <button onClick={()=>setSelStar(null)} aria-label="Close star details" style={{position:"absolute",top:8,right:10,background:"none",border:"none",color:C.dim,fontSize:16,cursor:"pointer"}}>×</button>
+         <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:19,color:C.sel}}>{selStar}</span>
+          {f&&<span style={{fontSize:11,color:C.dim,fontFamily:"ui-monospace,monospace"}}>{f.type}</span>}
+         </div>
+         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(110px,1fr))",gap:8,marginTop:10}}>
+          {cat&&<div><div style={{fontSize:10,letterSpacing:1.5,color:C.dim}}>DISTANCE</div><div style={{fontFamily:"ui-monospace,monospace",fontSize:14,color:C.cream}}>{cat.dist.toLocaleString()} ly</div></div>}
+          {f&&<div><div style={{fontSize:10,letterSpacing:1.5,color:C.dim}}>SIZE</div><div style={{fontFamily:"ui-monospace,monospace",fontSize:14,color:C.cream}}>{f.radius}</div></div>}
+          {f&&<div><div style={{fontSize:10,letterSpacing:1.5,color:C.dim}}>LUMINOSITY</div><div style={{fontFamily:"ui-monospace,monospace",fontSize:14,color:C.cream}}>{f.lum}</div></div>}
+          {cat&&<div><div style={{fontSize:10,letterSpacing:1.5,color:C.dim}}>MAGNITUDE</div><div style={{fontFamily:"ui-monospace,monospace",fontSize:14,color:C.cream}}>{cat.mag.toFixed(2)}</div></div>}
+         </div>
+         {f&&<div style={{fontSize:13,color:C.cream,fontStyle:"italic",lineHeight:1.5,marginTop:10}}>{f.fact}</div>}
+         <a href={`https://en.wikipedia.org/wiki/${f?f.wiki:encodeURIComponent(selStar)}`} target="_blank" rel="noopener noreferrer" style={{display:"inline-block",marginTop:10,color:C.brass,fontSize:13,textDecoration:"none",borderBottom:`1px solid ${C.brass}66`}}>Learn more on Wikipedia →</a>
+        </div>
+       );
+      })()}
+      {/* constellation story card */}
+      {skyMode==="stars"&&selConst&&FEATURED[selConst]&&(()=>{
+       const f=FEATURED[selConst];
+       const dists=f.stars.map(n=>starByName[n]).filter(Boolean).map(s=>s.dist);
+       const lo=Math.min(...dists),hi=Math.max(...dists);
+       return(
+        <div style={{marginTop:10,background:C.panel2,border:`1px solid #5b86c455`,borderRadius:12,padding:"12px 14px",position:"relative"}}>
+         <button onClick={()=>setSelConst(null)} aria-label="Close constellation details" style={{position:"absolute",top:8,right:10,background:"none",border:"none",color:C.dim,fontSize:16,cursor:"pointer"}}>×</button>
+         <div style={{display:"flex",alignItems:"baseline",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:19,color:"#9dbdf0"}}>{selConst}</span>
+          <span style={{fontSize:11,color:C.dim,fontFamily:"ui-monospace,monospace"}}>{f.stars.length} stars · {lo.toLocaleString()}–{hi.toLocaleString()} ly deep</span>
+         </div>
+         <div style={{fontSize:13,color:C.cream,fontStyle:"italic",lineHeight:1.5,marginTop:8}}>{f.blurb}</div>
+         <button onClick={()=>{setConKey(selConst);setMorph(0);setMorphPlay(false);setTab("depth");}} style={{marginTop:10,background:"#1a2440",color:"#9dbdf0",border:"1px solid #5b86c455",borderRadius:8,padding:"7px 12px",fontSize:13,fontFamily:"Georgia,serif",cursor:"pointer"}}>Unstack it in the depth view →</button>
+        </div>
+       );
+      })()}
+      <div style={{marginTop:10}}>{TimeStepper()}</div>
+      {skyMode==="planets"&&<label style={{fontSize:12,color:C.dim,display:"flex",gap:6,alignItems:"center",marginTop:8}}>
+       <input type="checkbox" checked={showTrail} onChange={e=>setShowTrail(e.target.checked)} style={{accentColor:C.brass}}/> trace {selected}'s path vs. stars (Mars near opp. → retrograde loop)
+      </label>}
+      {skyMode==="stars"&&!selStar&&!selConst&&<div style={{fontSize:12,color:C.dim,marginTop:8,fontStyle:"italic"}}>Every star is tappable — the ten brightest are haloed and named. Tap a constellation's name for its story.</div>}
+     </div>}
+
+     <div style={panel}>
+      <Plate right="tap to select">TONIGHT'S REPORT</Plate>
+      {bodies.map((b,bi)=>(
+       <div key={b.name} onClick={()=>setSelected(b.name)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 8px",borderRadius:8,cursor:"pointer",background:selected===b.name?"#1c2848":"transparent",borderTop:bi>0?`1px solid ${C.line}44`:"none"}}>
+        <span style={{width:10,height:10,borderRadius:6,background:b.color,flexShrink:0,boxShadow:`0 0 8px ${b.color}`}}/>
+        <span style={{width:66,fontSize:14}}>{b.name}</span>
+        <span style={{fontSize:12,color:b.sc,flex:1}}>{b.status}</span>
+        <span style={{fontSize:11,color:C.dim,fontFamily:"ui-monospace,monospace"}}>{b.extra}</span>
+       </div>
+      ))}
+     </div>
+    </>}
+
+    {tab==="fly"&&<>
+     <div style={{background:C.panel,border:`1px solid ${C.line}`,borderRadius:14,padding:12,marginBottom:12}}>
+      <Plate right="then take the ride">FLIGHT PLAN</Plate>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+       {PRESETS.map(p=>(<button key={p.name} style={{...chip(flyPlace.name===p.name)}} onClick={()=>setFlyPlace(p)}>{p.name}</button>))}
+      </div>
+      <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+       <span style={{fontSize:11,color:C.dim}}>latitude {flyPlace.lat.toFixed(1)}°</span>
+       <input type="range" min={-55} max={66} step={0.5} value={flyPlace.lat} onChange={e=>setFlyPlace({name:"Custom",lat:+e.target.value,lon:flyPlace.lon})} style={{flex:1,minWidth:140,accentColor:C.brass}}/>
+       <input type="date" value={(()=>{const d=new Date(flyDate);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})()} style={{...btn(false),padding:"4px 8px"}} onChange={e=>{if(!e.target.value)return;const[y,m,dd]=e.target.value.split("-").map(Number);const d=new Date(flyDate);d.setFullYear(y,m-1,dd);setFlyDate(d.getTime());}}/>
+      </div>
+
+      {/* time of night */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginTop:12}}>
+       <span style={{fontSize:11,color:C.dim,width:74}}>time of night</span>
+       <button style={chip(flyTimeMode==="auto")} onClick={()=>setFlyTimeMode("auto")}>Auto (twilight)</button>
+       <button style={chip(flyTimeMode==="now")} onClick={()=>setFlyTimeMode("now")}>Now</button>
+       <button style={chip(flyTimeMode==="custom")} onClick={()=>setFlyTimeMode("custom")}>Custom</button>
+      </div>
+      {flyTimeMode==="custom"&&<div style={{display:"flex",gap:10,alignItems:"center",marginTop:6}}>
+       <span style={{fontSize:11,color:C.dim,width:74}}>{String(Math.floor(flyHour)).padStart(2,"0")}:{String(Math.round((flyHour%1)*60)).padStart(2,"0")} local</span>
+       <input type="range" min={17} max={29} step={0.25} value={flyHour} onChange={e=>setFlyHour(+e.target.value)} style={{flex:1,accentColor:C.brass}}/>
+      </div>}
+
+      {/* look direction */}
+      <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginTop:10}}>
+       <span style={{fontSize:11,color:C.dim,width:74}}>look toward</span>
+       <button style={chip(flyDirMode==="auto")} onClick={()=>setFlyDirMode("auto")}>Auto (most planets)</button>
+       <button style={chip(flyDirMode==="custom")} onClick={()=>setFlyDirMode("custom")}>Custom</button>
+      </div>
+      {flyDirMode==="custom"&&<div style={{display:"flex",gap:10,alignItems:"center",marginTop:6}}>
+       <span style={{fontSize:11,color:C.dim,width:74}}>{compass16(flyAz)} {Math.round(flyAz)}°</span>
+       <input type="range" min={0} max={359} step={1} value={flyAz} onChange={e=>setFlyAz(+e.target.value)} style={{flex:1,accentColor:C.brass}}/>
+      </div>}
+
+      <div style={{fontSize:11,color:C.dim,marginTop:10,fontStyle:"italic"}}>Auto lands at that evening’s astronomical twilight, facing wherever the most planets are up.</div>
+     </div>
+     {(()=>{
+      // resolve the moment
+      let moment;
+      if(flyTimeMode==="now")moment=Date.now();
+      else if(flyTimeMode==="custom"){
+       const base=new Date(flyDate);
+       const utcMid=Date.UTC(base.getFullYear(),base.getMonth(),base.getDate(),0,0,0);
+       const lonOff=(flyPlace.lon/15)*3600000;
+       moment=utcMid+flyHour*3600000-lonOff; // flyHour as local solar hour (17–29 = 5pm–5am)
+      }else moment=findDarkMoment(flyDate,flyPlace.lat,flyPlace.lon);
+      // resolve look azimuth
+      const auto=bestLookAz(moment,flyPlace.lat,flyPlace.lon);
+      const az=flyDirMode==="custom"?flyAz:auto.az;
+      const note=flyDirMode==="custom"?null:auto.note;
+      return(
+       <FlyToEarth key={`${flyPlace.lat}_${flyPlace.lon}_${moment}_${az}`} lat={flyPlace.lat} lon={flyPlace.lon} timeMs={moment} placeName={flyPlace.name} lookAz={az} lookNote={note}
+        onExplore={()=>{setLat(Math.round(flyPlace.lat));setTimeMs(moment);setSkyMode("planets");setCenterAz(az);setTab("explore");}}/>
+      );
+     })()}
+     <div style={{textAlign:"center",fontSize:11,color:C.dim,marginTop:12,fontStyle:"italic"}}>The 3D camera turns to your chosen heading before the cut, so the model and the real horizon line up.</div>
+    </>}
+
+    {tab==="depth"&&<>
+     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12,justifyContent:"center"}}>
+      {Object.keys(FEATURED).map(k=>(<button key={k} style={btn(conKey===k)} onClick={()=>{setConKey(k);setMorph(0);setMorphPlay(false);}}>{k}</button>))}
+     </div>
+     <div style={{background:C.panel,border:`1px solid ${C.line}`,borderRadius:14,padding:12}}>
+      <Plate right="slide to unstack the constellation">LINE-OF-SIGHT DEPTH</Plate>
+      <DepthView conKey={conKey} morph={morph} logScale={logScale}/>
+      <div style={{display:"flex",gap:10,alignItems:"center",marginTop:12}}>
+       <button style={btn(morphPlay)} onClick={()=>setMorphPlay(!morphPlay)}>{morphPlay?"❚❚":"▶"}</button>
+       <span style={{fontSize:11,color:C.dim}}>sky</span>
+       <input type="range" min={0} max={1} step={0.01} value={morph} onChange={e=>{setMorph(+e.target.value);setMorphPlay(false);}} style={{flex:1,accentColor:C.brass}}/>
+       <span style={{fontSize:11,color:C.dim}}>depth</span>
+      </div>
+      <label style={{fontSize:12,color:C.dim,display:"flex",gap:6,alignItems:"center",marginTop:8}}><input type="checkbox" checked={logScale} onChange={e=>setLogScale(e.target.checked)} style={{accentColor:C.brass}}/> logarithmic distance scale</label>
+      <div style={{marginTop:12,padding:12,background:C.panel2,borderRadius:10,fontSize:13.5,lineHeight:1.55}}>{FEATURED[conKey].blurb}</div>
+     </div>
+    </>}
+
+    <div style={{textAlign:"center",fontSize:11,color:C.dim,marginTop:18,fontStyle:"italic"}}>
+     Keplerian positions (J2000 + secular rates) · sizes compressed, not to scale · Moon ~1° · compass needs HTTPS/saved file + sensors.
+    </div>
+   </div>
+  </div>
+ );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
